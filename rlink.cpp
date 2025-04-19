@@ -324,77 +324,157 @@ bool mismatch_anchor(CReadAln *rd,char *mdstr,int refstart, bam1_t *b) {
 
 	return false;
 }
+// Constants for polyA/T detection
+const int MAX_WINDOW_SIZE = 20;     // Window size for checking poly sequences
+const double MIN_POLY_PERCENT = 0.8; // Minimum percentage of A's or T's required (20/25)
+const int MIN_POLY_LENGTH = 10;     // Minimum number of A's or T's required
+const int MAX_MISMATCHES = MAX_WINDOW_SIZE * (1 - MIN_POLY_PERCENT);// Maximum allowed non-A or non-T bases
 
-// function detects 10-20 consecutive A's with  80-90% of the bases being A at the match end of the single long read and exclude it from the alignment
-bool genome_polyA_terminated(GSamRecord& brec) {
-
-	char *readseq=brec.sequence();
-	int len = strlen(readseq);
-
-	// check if there is a polyA tail
-	if(brec.clipR) { // adjust length for softclipping
-		len-=brec.clipR;
-	}
-
-	/*// Ensure there are at least 10 characters in the string --> not likely for long reads
-	if(len<10) {
-		GFREE(readseq);
-		return(false);
-	}*/
-
-	int start_pos = len - 1; // end of potential end sequence
-
-	int a_count=0;
-	int end_count=0;
-	while(start_pos>=0 && end_count<25) { // 20/25=0.8
-		end_count++;
-		if(readseq[start_pos]=='A') a_count++;
-
-		if(end_count-a_count>5) {
-			break; // no need to check further if more than 5 characters were non A's
-		}
-
-		// Check if 'A' characters are over 80%
-		if (a_count>=10 && (double)a_count / end_count >= 0.8) {
-			GFREE(readseq);
-			return(true); // No need to check further if a valid end seq is found
-		}
-
-		start_pos--;
-	}
-
-	// check if there is a polyT start
-	start_pos = brec.clipL;
-
-	/*// Ensure there are at least 10 characters in the string --> not likely
-	if(len-brec.clipL<10) {
-		GFREE(readseq);
-		return(false);
-	}*/
-
-	a_count=0;
-	end_count=0;
-
-	while(start_pos<len && end_count<25) { // 20/25=0.8
-		end_count++;
-		if(readseq[start_pos]=='T') a_count++;
-
-		if(end_count-a_count>5) {
-			break; // no need to check further if more than 5 characters were non T's
-		}
-
-		// Check if 'T' characters are over 80%
-		if (a_count>=10 && (double)a_count / end_count >= 0.8) {
-			GFREE(readseq);
-			return(true); // No need to check further if a valid end seq is found
-		}
-
-		start_pos++;
-	}
-
-	GFREE(readseq);
-	return(false);
+// Check for consecutive T's at start of read
+bool check_aligned_polyT_start(GSamRecord& brec) {
+    char *readseq = brec.sequence();
+	if (!readseq) return false;
+    int len = strlen(readseq);
+    
+    // Adjust start position for left softclipping
+    int start_pos = brec.clipL;
+    int t_count = 0;
+    int pos_count = 0;
+    
+    while(pos_count < MAX_WINDOW_SIZE && (start_pos + pos_count) < len) {
+        pos_count++;
+        if(readseq[start_pos + pos_count - 1] == 'T') t_count++;
+        
+        if(pos_count - t_count > MAX_MISMATCHES) {
+            GFREE(readseq);
+                    return false;
+                }
+        
+        if(t_count >= MIN_POLY_LENGTH && (double)t_count / pos_count >= MIN_POLY_PERCENT) {
+            GFREE(readseq);
+                    return true;
+                }
+            }
+    
+    GFREE(readseq);
+    return false;
 }
+
+// Check for consecutive A's at end of read with specified threshold percentage
+bool check_aligned_polyA_end(GSamRecord& brec) {
+    char *readseq = brec.sequence();
+	if (!readseq) return false;
+    int len = strlen(readseq);
+    
+    // Adjust end position for right softclipping
+    int end_pos = len - brec.clipR - 1;
+    int a_count = 0;
+    int pos_count = 0;
+    
+    while(end_pos >= 0 && pos_count < MAX_WINDOW_SIZE) {
+        pos_count++;
+        if(readseq[end_pos] == 'A') a_count++;
+        
+        if(pos_count - a_count > MAX_MISMATCHES) {
+            GFREE(readseq);
+                    return false;
+                }
+        
+        if(a_count >= MIN_POLY_LENGTH && (double)a_count / pos_count >= MIN_POLY_PERCENT) {
+            GFREE(readseq);
+                    return true;
+                }
+        end_pos--;
+    }
+    
+    GFREE(readseq);
+                    return false;
+                }
+
+
+bool check_unaligned_polyA_end(GSamRecord& brec) {
+    char *readseq = brec.sequence();
+	if (!readseq) return false;
+    int len = strlen(readseq);
+
+    // Number of bases soft-clipped at the right end:
+    // If clipR=0, there's no unaligned segment to check.
+    int clip_len = brec.clipR;
+    if (clip_len <= 0) {
+        GFREE(readseq);
+    return false;
+}
+
+    // Start of the unaligned region is the first base after the aligned portion:
+    // For example, if read length=1000 and clipR=50, the unaligned region is [950..999]
+    int start_pos = len - clip_len; // index of first unaligned base
+    int pos_count = 0;
+    int a_count = 0;
+
+    while (pos_count < MAX_WINDOW_SIZE && (start_pos + pos_count) < len) {
+        if (readseq[start_pos + pos_count] == 'A') {
+            a_count++;
+        }
+        pos_count++;
+
+        // If mismatches exceed MAX_MISMATCHES, stop
+        if ((pos_count - a_count) > MAX_MISMATCHES) {
+            GFREE(readseq);
+            return false;
+        }
+
+        // If we've found enough A's at high enough percentage:
+        if (a_count >= MIN_POLY_LENGTH && (double)a_count / pos_count >= MIN_POLY_PERCENT) {
+            GFREE(readseq);
+            return true;
+        }
+    }
+
+    GFREE(readseq);
+    return false;
+}
+
+bool check_unaligned_polyT_start(GSamRecord& brec) {
+    char *readseq = brec.sequence();
+	if (!readseq) return false;
+    int len = strlen(readseq);
+
+    // Number of bases soft-clipped at the left end:
+    // If clipL=0, there's no unaligned segment at the start.
+    int clip_len = brec.clipL;
+    if (clip_len <= 0) {
+        GFREE(readseq);
+        return false;
+    }
+
+    // We'll scan from index 0 up to clip_len - 1 (the unaligned portion)
+    // or up to MAX_WINDOW_SIZE, whichever is smaller.
+    int pos_count = 0;
+    int t_count = 0;
+    int max_check = (clip_len < MAX_WINDOW_SIZE) ? clip_len : MAX_WINDOW_SIZE;
+
+    while (pos_count < max_check) {
+        if (readseq[pos_count] == 'T') {
+            t_count++;
+        }
+        pos_count++;
+
+        // If mismatches exceed MAX_MISMATCHES, stop
+        if ((pos_count - t_count) > MAX_MISMATCHES) {
+            GFREE(readseq);
+            return false;
+        }
+
+        if (t_count >= MIN_POLY_LENGTH && (double)t_count / pos_count >= MIN_POLY_PERCENT) {
+            GFREE(readseq);
+		return true;
+        }
+    }
+
+    GFREE(readseq);
+    return false;
+}
+
 
 void processRead(int currentstart, int currentend, BundleData& bdata,
 		 GHash<int>& hashread,  GReadAlnData& alndata,bool ovlpguide) { // some false positives should be eliminated here in order to break the bundle
@@ -422,11 +502,6 @@ void processRead(int currentstart, int currentend, BundleData& bdata,
 
 	bool longr=false;
 	if(longreads|| brec.uval) longr=true; // second alignment is always from mixed reads
-
-	//if(longr && brec.exons.Count()==1) { // if unspliced long read, check to see if it was just picked up by mistake; maybe not for mixed mode?
-	if(longr && brec.exons.Count()==1 && !ovlpguide) { // if unspliced long read, check to see if it was just picked up by mistake; maybe not for mixed mode?
-		if(genome_polyA_terminated(brec)) return; // skip read if it's polyA terminated on the genome
-	}
 
 
 	double nm=(double)brec.tag_int("NM"); // read mismatch

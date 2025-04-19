@@ -542,6 +542,15 @@ void processRead(int currentstart, int currentend, BundleData& bdata,
 			if(len<mintranscriptlen) return;
 		}
 		readaln=new CReadAln(strand, nh, brec.start, brec.end, alndata.tinfo);
+
+		// Long read strand may be corrected downstream - so we check both ends for polyA and polyT
+		if(longr) {
+			if(check_aligned_polyT_start(brec)) readaln->aligned_polyT=true;
+			if(check_aligned_polyA_end(brec)) readaln->aligned_polyA=true;
+			if(check_unaligned_polyA_end(brec)) readaln->unaligned_polyA=true;
+			if(check_unaligned_polyT_start(brec)) readaln->unaligned_polyT=true;
+		}
+
 		readaln->longread=longr;
 		alndata.tinfo=NULL; //alndata.tinfo was passed to CReadAln
 		for (int i=0;i<brec.exons.Count();i++) {

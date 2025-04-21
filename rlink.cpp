@@ -329,6 +329,29 @@ const int MAX_WINDOW_SIZE = 20;     // Window size for checking poly sequences
 const double MIN_POLY_PERCENT = 0.8; // Minimum percentage of A's or T's required (20/25)
 const int MIN_POLY_LENGTH = 10;     // Minimum number of A's or T's required
 const int MAX_MISMATCHES = MAX_WINDOW_SIZE * (1 - MIN_POLY_PERCENT);// Maximum allowed non-A or non-T bases
+const float POLY_TAIL_THRESHOLD = 0.7;
+
+// checks which intron, if any, has an artifact polyA/T
+int poly_tail_exon(CReadAln* aln) {
+	if (aln == nullptr || aln->segs.Count() == 0) return -1;
+
+	int n = aln->segs.Count();
+
+	if (aln->strand == 1 && aln->aligned_polyA && !aln->unaligned_polyA)
+		return n - 1;  // last exon
+	else if (aln->strand == -1 && aln->aligned_polyT && !aln->unaligned_polyT)
+		return 0;      // first exon
+	else if (aln->strand == 0) {
+		if ((aln->aligned_polyA && !aln->unaligned_polyA) ||
+		    (aln->aligned_polyT && !aln->unaligned_polyT))
+			return n - 1;  // default to last exon for unstranded
+	}
+
+	return -1;  // no poly tail exon
+}
+
+
+
 
 // Check for consecutive T's at start of read
 bool check_aligned_polyT_start(GSamRecord& brec) {
@@ -1049,7 +1072,9 @@ int merge_read_to_group(int n,int np, int p, float readcov, int sno,int readcol,
 
 			bool keep=true;
 			// determine if this exon is good enough to be kept (it is big enough and has good junctions)
-			if(readlist[n]->segs[i].len()<junctionsupport || (readlist[n]->longread && readlist[n]->segs[i].len()<CHI_THR && readlist[n]->segs[i].len()<DROP*readlist[n]->len)) { // exon is too small to keep
+			if(readlist[n]->segs[i].len()<junctionsupport || 
+				(readlist[n]->longread && readlist[n]->segs[i].len()<CHI_THR && 
+				readlist[n]->segs[i].len()<DROP*readlist[n]->len)) { // exon is too small to keep
 
 				if(i<readlist[n]->juncs.Count()) {
 					if(!readlist[n]->juncs[i]->strand) { // check first exon
@@ -4865,6 +4890,22 @@ void get_read_to_transfrag(GList<CReadAln>& readlist,int n,GVec<int> *readgroup,
 
 			// mark transfrag as guide
 			if(readlist[n]->tinfo->g>-1) t->real=true;
+
+			if(!t->real && readlist[n]->longread) {
+
+				if(readlist[n]->segs.Count()==1) {
+					t->is_artifact=((readlist[n]->aligned_polyA && readlist[n]->unaligned_polyA) || 
+						(readlist[n]->aligned_polyT && readlist[n]->unaligned_polyT));
+				}
+				else {
+					if (s==1){
+						t->is_artifact=(readlist[n]->aligned_polyA && readlist[n]->unaligned_polyA);
+					}
+					else {
+						t->is_artifact=(readlist[n]->aligned_polyT && readlist[n]->unaligned_polyT);
+					}
+				}
+			}
 
 			// update MTransfrag
 			int i=0;

@@ -76,8 +76,9 @@ struct CTransfrag {
 	int guide;
 	uint longstart; // for long reads: min start of all longreads sharing transfrag
 	uint longend; // for long reads: max end of all longreads sharing transfrag
-	CTransfrag(GVec<int>& _nodes,GBitVec& bit, float abund=0, bool treal=false, int tguide=0,float sr=0):nodes(_nodes),pattern(bit),abundance(abund),srabund(sr),path(),usepath(-1),weak(-1),real(treal),longread(false),shortread(false),guide(tguide),longstart(false),longend(false) {}
-	CTransfrag(float abund=0, bool treal=false,int tguide=0):nodes(),pattern(),abundance(abund),srabund(0),path(),usepath(-1),weak(-1),real(treal),longread(false),shortread(false),guide(tguide),longstart(false),longend(false) {
+	bool is_artifact:1;
+	CTransfrag(GVec<int>& _nodes,GBitVec& bit, float abund=0, bool treal=false, int tguide=0,float sr=0):nodes(_nodes),pattern(bit),abundance(abund),srabund(sr),path(),usepath(-1),weak(-1),real(treal),longread(false),shortread(false),guide(tguide),longstart(false),longend(false),is_artifact(false) {}
+	CTransfrag(float abund=0, bool treal=false,int tguide=0):nodes(),pattern(),abundance(abund),srabund(0),path(),usepath(-1),weak(-1),real(treal),longread(false),shortread(false),guide(tguide),longstart(false),longend(false),is_artifact(false) {
 	}
 };
 
@@ -358,9 +359,10 @@ struct CGraphnode:public GSeg {
 	GVec<int> trf; // transfrags that pass the node
 	bool hardstart:1; // verified/strong start
 	bool hardend:1;	// verified/strong end
+	bool tailArtifact:1;
 	//CGraphnode(int s=0,int e=0,unsigned int id=MAX_NODE,float nodecov=0,float cap=0,float r=0,float f=0):GSeg(s,e),nodeid(id),cov(nodecov),capacity(cap),rate(r),frag(f),child(),parent(),childpat(),parentpat(),trf(){}
 	CGraphnode(int s=0,int e=0,unsigned int id=MAX_NODE,float nodecov=0,float in=0,float out=0):GSeg(s,e),
-			nodeid(id),cov(nodecov),abundin(in),abundout(out),child(),parent(),childpat(),parentpat(),trf(),hardstart(false),hardend(false){}
+			nodeid(id),cov(nodecov),abundin(in),abundout(out),child(),parent(),childpat(),parentpat(),trf(),hardstart(false),hardend(false),tailArtifact(false){}
 };
 
 

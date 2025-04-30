@@ -14476,39 +14476,6 @@ int build_graphs(BundleData* bdata) {
 	bool resort=false;
 	int njunc=junction.Count();
 
-	for (int n = 0; n < readlist.Count(); n++) {
-		CReadAln &rd = *(readlist[n]);
-		if (!rd.longread) continue;
-		
-		//TODO: can also remove RT drop-off at poly(rA/rU)
-		// unknown strand:
-		if (rd.strand == 0) {
-			if (rd.aligned_polyA && !rd.unaligned_polyA) {
-				shortenLastExon(rd);
-			}
-				
-			if (rd.aligned_polyT && !rd.unaligned_polyT) { 
-				shortenFirstExon(rd);
-			}
-		}
-			
-		// Forward strand
-		if (rd.strand == 1) {
-			if (rd.aligned_polyA && !rd.unaligned_polyA) {
-				shortenLastExon(rd);
-			}
-		} 
-		// Reverse strand
-		else if (rd.strand == -1) {
-			if (rd.aligned_polyT && !rd.unaligned_polyT) {
-				shortenFirstExon(rd);
-			}
-		}
-	}
-
-	//sort the readlist by start position, then by strand, then by end position
-	readlist.Sort();
-
 	for (int n=0;n<readlist.Count();n++) {
 		CReadAln & rd=*(readlist[n]);
 
@@ -14765,22 +14732,58 @@ int build_graphs(BundleData* bdata) {
 			for(i=0;i<rd.juncs.Count();i++) { fprintf(stderr," %d-%d:%d",rd.segs[i].start,rd.segs[i].end,rd.juncs[i]->strand);}
 			fprintf(stderr," %d-%d\n",rd.segs[i].start,rd.segs[i].end);*/
 
-			color=add_read_to_group(n,readlist,color,group,currgroup,startgroup,readgroup,equalcolor,merge);
+		// count fragments
+		if(!rd.unitig)
+			bdata->frag_len+=rd.len*rd.read_count; // TODO: adjust this to work with FPKM for super-reads and Pacbio
+		double single_count=rd.read_count;
+		if(keep) for(int i=0;i<rd.pair_idx.Count();i++) {
+			// I am not counting the fragment if I saw the pair before and it wasn't deleted
+			if(rd.pair_idx[i]!=-1 && n>rd.pair_idx[i] && readlist[rd.pair_idx[i]]->nh) {// only if read is paired and it comes first in the pair I count the fragments
+				single_count-=rd.pair_count[i];
+			}
+		}
+		if(!rd.unitig && single_count>epsilon) {
+			bdata->num_fragments+=single_count; // TODO: FPKM will not work for super-reads here because I have multiple fragments in
+												// a super-read -> I might want to re-estimate this from coverage and have some input for read length; or I might only use TPM
+		}
 
-			// count fragments
-			if(!rd.unitig)
-				bdata->frag_len+=rd.len*rd.read_count; // TODO: adjust this to work with FPKM for super-reads and Pacbio
-			double single_count=rd.read_count;
-			if(keep) for(int i=0;i<rd.pair_idx.Count();i++) {
-				// I am not counting the fragment if I saw the pair before and it wasn't deleted
-				if(rd.pair_idx[i]!=-1 && n>rd.pair_idx[i] && readlist[rd.pair_idx[i]]->nh) {// only if read is paired and it comes first in the pair I count the fragments
-					single_count-=rd.pair_count[i];
+		if (rd.longread) {
+			//TODO: can also remove RT drop-off at poly(rA/rU)
+			// unknown strand:
+			if (rd.strand == 0) {
+				if (rd.aligned_polyA && !rd.unaligned_polyA) {
+					shortenLastExon(rd);
+				}
+					
+				if (rd.aligned_polyT && !rd.unaligned_polyT) { 
+					shortenFirstExon(rd);
 				}
 			}
-			if(!rd.unitig && single_count>epsilon) {
-				bdata->num_fragments+=single_count; // TODO: FPKM will not work for super-reads here because I have multiple fragments in
-												    // a super-read -> I might want to re-estimate this from coverage and have some input for read length; or I might only use TPM
+				
+			// Forward strand
+			if (rd.strand == 1) {
+				if (rd.aligned_polyA && !rd.unaligned_polyA) {
+					shortenLastExon(rd);
+				}
+			} 
+			
+			// Reverse strand
+			else if (rd.strand == -1) {
+				if (rd.aligned_polyT && !rd.unaligned_polyT) {
+					shortenFirstExon(rd);
+				}
 			}
+		}
+	}
+
+	//if longreads, then re-sort the readlist
+	//TODO: if we add an is_polyA parameter, then we would need to make this a condition.
+	if(longreads) {
+		readlist.Sort();
+	}
+
+	for (int n = 0; n < readlist.Count(); n++) {
+			color=add_read_to_group(n,readlist,color,group,currgroup,startgroup,readgroup,equalcolor,merge);
 
 			//fprintf(stderr,"now color=%d\n",color);
 		//}

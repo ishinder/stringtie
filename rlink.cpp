@@ -553,6 +553,14 @@ void processRead(int currentstart, int currentend, BundleData& bdata,
 			if(len<mintranscriptlen) return;
 		}
 		readaln=new CReadAln(strand, nh, brec.start, brec.end, alndata.tinfo);
+
+		if(longr) {
+			readaln->aligned_polyT = check_aligned_polyT_start(brec);
+			readaln->aligned_polyA = check_aligned_polyA_end(brec);
+			readaln->unaligned_polyT = check_unaligned_polyT_start(brec);
+			readaln->unaligned_polyA = check_unaligned_polyA_end(brec);
+		}
+
 		readaln->longread=longr;
 		alndata.tinfo=NULL; //alndata.tinfo was passed to CReadAln
 		for (int i=0;i<brec.exons.Count();i++) {
@@ -13827,6 +13835,44 @@ void continue_read(GList<CReadAln>& readlist,int n,int idx) {
 	}
 }
 
+// Helper function to shorten first exon to a single base and update read properties
+void shortenFirstExon(CReadAln &rd) {
+    int nEx = rd.segs.Count();
+    if(nEx < 2) return;
+    
+    // uint old_start = rd.segs[0].start;
+    rd.segs[0].start = rd.segs[0].end - 1;
+    rd.start = rd.segs[0].start;
+    
+    // Recalculate read length
+    rd.len = 0;
+    for(int i = 0; i < nEx; i++) {
+        rd.len += rd.segs[i].end - rd.segs[i].start + 1;
+    }
+    
+    // GMessage("Shortened first exon at position %d to a single basepair and changed start position to %d\n", 
+    //          old_start, rd.start);
+}
+
+// Helper function to shorten last exon to a single base and update read properties
+void shortenLastExon(CReadAln &rd) {
+    int nEx = rd.segs.Count();
+    if(nEx < 2) return;
+    
+    // uint old_end = rd.segs[nEx-1].end;
+    rd.segs[nEx-1].end = rd.segs[nEx-1].start + 1;
+    rd.end = rd.segs[nEx-1].end;
+    
+    // Recalculate read length
+    rd.len = 0;
+    for(int i = 0; i < nEx; i++) {
+        rd.len += rd.segs[i].end - rd.segs[i].start + 1;
+    }
+    
+    // GMessage("Shortened last exon at position %d to a single basepair and changed end position to %d\n", 
+    //          old_end, rd.end);
+}
+
 int build_graphs(BundleData* bdata) {
 	int refstart = bdata->start;
 	GList<CReadAln>& readlist = bdata->readlist;
@@ -14429,6 +14475,40 @@ int build_graphs(BundleData* bdata) {
 
 	bool resort=false;
 	int njunc=junction.Count();
+
+	for (int n = 0; n < readlist.Count(); n++) {
+		CReadAln &rd = *(readlist[n]);
+		if (!rd.longread) continue;
+		
+		//TODO: can also remove RT drop-off at poly(rA/rU)
+		// unknown strand:
+		if (rd.strand == 0) {
+			if (rd.aligned_polyA && !rd.unaligned_polyA) {
+				shortenLastExon(rd);
+			}
+				
+			if (rd.aligned_polyT && !rd.unaligned_polyT) { 
+				shortenFirstExon(rd);
+			}
+		}
+			
+		// Forward strand
+		if (rd.strand == 1) {
+			if (rd.aligned_polyA && !rd.unaligned_polyA) {
+				shortenLastExon(rd);
+			}
+		} 
+		// Reverse strand
+		else if (rd.strand == -1) {
+			if (rd.aligned_polyT && !rd.unaligned_polyT) {
+				shortenFirstExon(rd);
+			}
+		}
+	}
+
+	//sort the readlist by start position, then by strand, then by end position
+	readlist.Sort();
+
 	for (int n=0;n<readlist.Count();n++) {
 		CReadAln & rd=*(readlist[n]);
 

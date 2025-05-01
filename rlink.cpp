@@ -13927,6 +13927,26 @@ void shortenLastExon(CReadAln &rd) {
     //          old_end, rd.end);
 }
 
+void addForbiddenPositions(int n, int pos, int range, GHashMap<uint, GVec<int>*>& forbidList) {
+    for(int i = pos - range; i <= pos + range; ++i) {
+        if(i >= 0) {
+            uint key = (uint)i;
+            // Check if the key exists
+            GVec<int>* pVal = forbidList.Find(key);
+            if (pVal == NULL) {
+                 // Key not found, create a new GVec<int> on the heap
+                 GVec<int>* newList = new GVec<int>();
+                 newList->Add(n);
+                 // Add the pointer to the map
+                 forbidList.Add(key, newList);
+            } else {
+                 // Key found, pVal is the GVec<int>*, add n to the existing vector
+                 pVal->Add(n); // Changed (*pVal)-> to pVal->
+            }
+        }
+    }
+}
+
 int build_graphs(BundleData* bdata) {
 	int refstart = bdata->start;
 	GList<CReadAln>& readlist = bdata->readlist;
@@ -14804,13 +14824,19 @@ int build_graphs(BundleData* bdata) {
 		if (rd.longread) {
 			//TODO: can also remove RT drop-off at poly(rA/rU)
 			// unknown strand:
+			
+			int start = (int)rd.start;
+			int end = (int)rd.end;
+
 			if (rd.strand == 0) {
 				if (rd.aligned_polyA && !rd.unaligned_polyA) {
 					shortenLastExon(rd);
+					addForbiddenPositions(n, end, 3, bdata->forbid_snk);
 				}
 					
 				if (rd.aligned_polyT && !rd.unaligned_polyT) { 
 					shortenFirstExon(rd);
+					addForbiddenPositions(n, start, 3, bdata->forbid_src);
 				}
 			}
 				
@@ -14818,6 +14844,7 @@ int build_graphs(BundleData* bdata) {
 			if (rd.strand == 1) {
 				if (rd.aligned_polyA && !rd.unaligned_polyA) {
 					shortenLastExon(rd);
+					addForbiddenPositions(n, end, 3, bdata->forbid_snk);
 				}
 			} 
 			
@@ -14825,6 +14852,7 @@ int build_graphs(BundleData* bdata) {
 			else if (rd.strand == -1) {
 				if (rd.aligned_polyT && !rd.unaligned_polyT) {
 					shortenFirstExon(rd);
+					addForbiddenPositions(n, start, 3, bdata->forbid_src);
 				}
 			}
 		}
@@ -15466,6 +15494,26 @@ int build_graphs(BundleData* bdata) {
     							bundle2graph,no2gnode,transfrag,trims); // also I need to remember graph coverages somewhere -> probably in the create_graph procedure
     					*
     					*/
+
+						//check for single nodes in bundle, where the start or end are forbidden
+
+						if (bundle[sno][b]->startnode == bundle[sno][b]->lastnodeid) {
+
+							if (bdata->forbid_src.hasKey(bnode[sno][bundle[sno][b]->startnode]->start)) {
+								GStr refname = bdata->refseq.chars();
+								uint start = bnode[sno][bundle[sno][b]->startnode]->start;
+								uint end = bnode[sno][bundle[sno][b]->lastnodeid]->end;
+								GMessage("Bundle %d has one node and start is in forbid_src: %s:%d-%d\n", b, refname, start, end);
+								continue;
+							}
+							if (bdata->forbid_snk.hasKey(bnode[sno][bundle[sno][b]->lastnodeid]->end)) {
+								GStr refname = bdata->refseq.chars();
+								uint start = bnode[sno][bundle[sno][b]->startnode]->start;
+								uint end = bnode[sno][bundle[sno][b]->lastnodeid]->end;
+								GMessage("Bundle %d has one node and end is in forbid_snk: %s:%d-%d\n", b, refname, start, end);
+								continue;
+							}
+						}
     					// create graph then
     					graphno[s][b]=create_graph(refstart,s,b,bundle[sno][b],bnode[sno],junction,ejunction,
     							bundle2graph,no2gnode,transfrag,gpos,bdata,edgeno[s][b],lastgpos[s][b],guideedge,tstartend); // also I need to remember graph coverages somewhere -> probably in the create_graph procedure

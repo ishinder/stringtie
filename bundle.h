@@ -339,12 +339,14 @@ struct BundleData {
  GList<CPrediction> pred;
  int numNascents=0; //number of nascent transcripts generated for this bundle
  RC_BundleData* rc_data; // read count data for this bundle
+ GHashMap<uint, GVec<int>*> forbid_src;  
+ GHashMap<uint, GVec<int>*> forbid_snk;
  BundleData():status(BUNDLE_STATUS_CLEAR), idx(0), start(0), end(0),
 		 numreads(0),
 		 num_fragments(0), frag_len(0),sum_cov(0),covflags(0),
 		 refseq(), gseq(NULL), readlist(false,true), //bpcov(1024),
 		 junction(true, true, true),
-		 keepguides(false), ptfs(false), pred(false), rc_data(NULL) {
+		 keepguides(false), ptfs(false), pred(false), rc_data(NULL), forbid_src(), forbid_snk() {
 	 for(int i=0;i<3;i++) 	bpcov[i].setCapacity(4096);
  }
 

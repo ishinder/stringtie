@@ -476,6 +476,45 @@ bool check_unaligned_polyT_start(GSamRecord& brec) {
     return false;
 }
 
+float check_last_exon_polyA(GSamRecord& brec) {
+    char* readseq = brec.sequence();
+    if (!readseq) return 0;
+    int seqLen = strlen(readseq);
+
+    // compute read‐relative start/end of the last exon
+    int exonLen  = brec.exons.Last().end - brec.exons.Last().start + 1;
+    int endIdx   = seqLen - brec.clipR - 1;
+    int startIdx = endIdx - exonLen + 1;
+    if (startIdx < 0) startIdx = 0;
+
+    int a_count = 0, pos_count = 0;
+    for (int i = startIdx; i <= endIdx; ++i) {
+        if (readseq[i] == 'A') ++a_count;
+        ++pos_count;
+    }
+    GFREE(readseq);
+    return pos_count ? float(a_count) / pos_count : 0;
+}
+
+float check_first_exon_polyT(GSamRecord& brec) {
+    char* readseq = brec.sequence();
+    if (!readseq) return 0;
+    int seqLen = strlen(readseq);
+
+    int exonLen  = brec.exons.First().end - brec.exons.First().start + 1;
+    int startIdx = brec.clipL;               // first aligned base in the read
+    int endIdx   = startIdx + exonLen - 1;
+    if (endIdx >= seqLen) endIdx = seqLen - 1;
+
+    int t_count = 0, pos_count = 0;
+    for (int i = startIdx; i <= endIdx; ++i) {
+        if (readseq[i] == 'T') ++t_count;
+        ++pos_count;
+    }
+    GFREE(readseq);
+    return pos_count ? float(t_count) / pos_count : 0;
+}
+
 
 void processRead(int currentstart, int currentend, BundleData& bdata,
 		 GHash<int>& hashread,  GReadAlnData& alndata,bool ovlpguide) { // some false positives should be eliminated here in order to break the bundle
@@ -512,6 +551,21 @@ void processRead(int currentstart, int currentend, BundleData& bdata,
 		if(neg_artifact || pos_artifact) {
 			return;
 		}
+	}
+
+	//check the last exon of the read to determine its % of poly rA/rU
+	//if it is above 80%, likely this is a polyA tail aligned as an exon
+	float polyA_percentage = check_last_exon_polyA(brec);
+	if (polyA_percentage >= 0.8) {
+		//remove the last exon of the read
+		brec.exons.Delete(brec.exons.Count() - 1);
+		brec.end = brec.exons.Last().end;
+	}
+	float polyT_percentage = check_first_exon_polyT(brec);
+	if (polyT_percentage >= 0.8) {
+		//remove the first exon of the read
+		brec.exons.Delete(0);
+		brec.start = brec.exons.First().start;
 	}
 
 

@@ -339,8 +339,8 @@ struct BundleData {
  GList<CPrediction> pred;
  int numNascents=0; //number of nascent transcripts generated for this bundle
  RC_BundleData* rc_data; // read count data for this bundle
- GHashMap<uint, GVec<int>*> forbid_src;  
- GHashMap<uint, GVec<int>*> forbid_snk;
+ GHashSet<uint> forbid_src;  
+ GHashSet<uint> forbid_snk;
  BundleData():status(BUNDLE_STATUS_CLEAR), idx(0), start(0), end(0),
 		 numreads(0),
 		 num_fragments(0), frag_len(0),sum_cov(0),covflags(0),

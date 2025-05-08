@@ -543,8 +543,8 @@ void processRead(int currentstart, int currentend, BundleData& bdata,
 	bool longr=false;
 	if(longreads|| brec.uval) longr=true; // second alignment is always from mixed reads
 
-	//sinlge exon reads do not contribute to junction information and increase bpcov.
-	//2exon reads contribute a junction, but are likely alignment artifacts (not real splice sites)
+	//sinlge exon reads do not contribute to junction information or bpcov.
+	//2exon reads contribute a junction, but are likely alignment artifacts.
 	if(longr && brec.exons.Count()<=2 && !ovlpguide) {
 		bool neg_artifact = check_aligned_polyT_start(brec); // || !check_unaligned_polyT_start(brec);
 		bool pos_artifact = check_aligned_polyA_end(brec); //|| !check_unaligned_polyA_end(brec);
@@ -3926,6 +3926,12 @@ int create_graph(int refstart,int s,int g,CBundle *bundle,GPVec<CBundlenode>& bn
 	if(!mergeMode) for(int i=1;i<graphno;i++) {
 		float icov=0;
 		if(i>1 && no2gnode[s][g][i]->parent[0]) { // node i has parents, and does not come from source => might need to be linked to source
+			// check if the start position is in forbid_src:
+			if(bdata->forbid_src.hasKey(no2gnode[s][g][i]->start)) {
+				// fprintf(stderr,"skipping source link from node %d because it's in forbid_src\n",i);
+				continue;
+			}
+			
 			/*icov=(get_cov(1,no2gnode[s][g][i]->start-refstart,no2gnode[s][g][i]->end-refstart,bpcov)-
 					get_cov(2-2*s,no2gnode[s][g][i]->start-refstart,no2gnode[s][g][i]->end-refstart,bpcov))/no2gnode[s][g][i]->len();*/
 			icov=get_cov_sign(2*s,no2gnode[s][g][i]->start-refstart,no2gnode[s][g][i]->end-refstart,bpcov)/no2gnode[s][g][i]->len();
@@ -3955,6 +3961,11 @@ int create_graph(int refstart,int s,int g,CBundle *bundle,GPVec<CBundlenode>& bn
 
 		if(i<graphno-1) {
 			if(no2gnode[s][g][i]->child.Count()) { // might need to be linked to sink
+				//check if the end position is in forbid_snk:
+				if(bdata->forbid_snk.hasKey(no2gnode[s][g][i]->end)) {
+					// fprintf(stderr,"skipping sink link from node %d because it's in forbid_snk\n",i);
+					continue;
+				}
 				bool addsink=true;
 				for(int j=0;j<sink->parent.Count();j++) {
 					if(sink->parent[j]==i) {
@@ -4648,7 +4659,24 @@ void get_fragment_pattern(GList<CReadAln>& readlist,int n, int np,float readcov,
 	fprintf(stderr,"\n");*/
 	uint rstart=readlist[n]->start; // this only works for unpaired long reads -> I will have to take into account the pair if I want to do it for all reads
 	uint rend=readlist[n]->end;
+	char strand = readlist[n]->strand;
+	bool is_artifact = false;
 	if(np>-1 && readlist[np]->end>rend) rend=readlist[np]->end;
+	CTransfrag *t=NULL;
+
+	if (readlist[n]->longread) {
+		if (strand == 0) {
+			is_artifact = (readlist[n]->aligned_polyA && !readlist[n]->unaligned_polyA) || 
+						(readlist[n]->aligned_polyT && !readlist[n]->unaligned_polyT);
+		}
+		else if (strand == 1) {
+			is_artifact = (readlist[n]->aligned_polyA && !readlist[n]->unaligned_polyA);
+		}
+		else if (strand == -1) {
+			is_artifact = (readlist[n]->aligned_polyT && !readlist[n]->unaligned_polyT);
+		}
+	}	
+
 
 	float rprop[2]={0,0}; // by default read does not belong to any strand
 	// compute proportions of unstranded read associated to strands
@@ -4793,8 +4821,9 @@ void get_fragment_pattern(GList<CReadAln>& readlist,int n, int np,float readcov,
 								for(int o=clear_rnode;o<j;o++) {
 									node.Add(rnode[r][o]);
 								}
-								update_abundance(s,rgno[r],graphno[s][rgno[r]],gpos[s][rgno[r]],rpat,rprop[s]*readcov,node,transfrag,tr2no,
+								t = update_abundance(s,rgno[r],graphno[s][rgno[r]],gpos[s][rgno[r]],rpat,rprop[s]*readcov,node,transfrag,tr2no,
 										no2gnode[s][rgno[r]],rstart, rend,readlist[n]->unitig,readlist[n]->longread);
+								t->is_artifact = is_artifact;
 								rpat.reset();
 								rpat[rnode[r][j]]=1; // restart the pattern
 								clear_rnode=j;
@@ -4856,8 +4885,9 @@ void get_fragment_pattern(GList<CReadAln>& readlist,int n, int np,float readcov,
 				pgno[p]=-1;
 			}
 			else { // pair has no valid pattern in this graph
-				update_abundance(s,rgno[r],graphno[s][rgno[r]],gpos[s][rgno[r]],rpat,rprop[s]*readcov,rnode[r],transfrag,tr2no,
+				t = update_abundance(s,rgno[r],graphno[s][rgno[r]],gpos[s][rgno[r]],rpat,rprop[s]*readcov,rnode[r],transfrag,tr2no,
 						no2gnode[s][rgno[r]],rstart, rend,readlist[n]->unitig,readlist[n]->longread);
+				t->is_artifact = is_artifact;
 			}
 		}
 
@@ -5931,7 +5961,37 @@ void process_transfrags(int s, int gno,int edgeno,GPVec<CGraphnode>& no2gnode,GP
 		//GBitVec guidesource(gno);
 		//GBitVec guidesink(gno);
 		//for(int i=0;i<keeptrf.Count();i++) {
+
+		// check if all transfrags in group are artifacts
+		GVec<int> totalTransfrags;
+		GVec<int> artifactTransfrags;
+		GVec<int> guideTransfrags;
+
+		totalTransfrags.Resize(keeptrf.Count(), 0);
+		artifactTransfrags.Resize(keeptrf.Count(), 0);
+		guideTransfrags.Resize(keeptrf.Count(), 0);
+
+		// Calculate group statistics for each keeptrf entry
+		for(int i=0; i<keeptrf.Count(); i++) {
+			totalTransfrags[i] = keeptrf[i].group.Count();
+			
+			// Count artifacts
+			for(int j=0; j<keeptrf[i].group.Count(); j++) {
+				if(transfrag[keeptrf[i].group[j]]->is_artifact) {
+					artifactTransfrags[i]++;
+				}
+				if (transfrag[keeptrf[i].group[j]]->guide) {
+					guideTransfrags[i]++;
+				}
+			}
+		}
+
 		for(int i=keeptrf.Count()-1;i>=0;i--) { // I add the kept transcripts to trflong from least significant to most in order to make deletion easier
+
+			//check if artifactTransfrags[i] == totalTransfrags[i], and guideTransfrags[i] == 0
+			if(artifactTransfrags[i] == totalTransfrags[i] && !guideTransfrags[i]) {
+				continue;
+			}
 
 			//fprintf(stderr,"Build source/sink for transfrag %d\n",keeptrf[i].t);
 			int n1=transfrag[keeptrf[i].t]->nodes[0];
@@ -6021,6 +6081,12 @@ void process_transfrags(int s, int gno,int edgeno,GPVec<CGraphnode>& no2gnode,GP
 		for(int i=keeptrf.Count()-1;i>=0;i--) {
 			int n1=transfrag[keeptrf[i].t]->nodes[0];
 			int n2=transfrag[keeptrf[i].t]->nodes.Last();
+			
+			//check if artifactTransfrags[i] == totalTransfrags[i], and guideTransfrags[i] == 0
+			if(artifactTransfrags[i] == totalTransfrags[i] && !guideTransfrags[i]) {
+				continue;
+			}
+
 
 			if(transfrag[keeptrf[i].t]->guide || ((no2gnode[n1]->hardstart || (hassource[n1]>=0 && keepsource[n1])) && (no2gnode[n2]->hardend ||(hassink[n2]>=0 && keepsink[n2]))))
 				trflong.Add(keeptrf[i].t);
@@ -7918,6 +7984,10 @@ bool fwd_to_sink_fast_long(int i,GVec<int>& path,int& minpath,int& maxpath,GBitV
 				//else GError("Found parent-child: %d-%d not linked by edge!\n",i,inode->child[c]);
 				for(int j=0;j<cnode->trf.Count();j++) { // for all transfrags going through child
 					int t=cnode->trf[j];
+					if (transfrag[t]->is_artifact) {
+						// fprintf(stderr, "1.Found artifact transfrag %d with abundance %f\n", t, transfrag[t]->abundance);
+						continue;
+					}
 					if(transfrag[t]->abundance<epsilon) { // this transfrag was used before -> needs to be deleted
 						if(!mixedMode) { cnode->trf.Delete(j); j--;}
 						else transfrag[t]->abundance=0;
@@ -7980,6 +8050,10 @@ bool fwd_to_sink_fast_long(int i,GVec<int>& path,int& minpath,int& maxpath,GBitV
 			//else GError("Found parent-child: %d-%d not linked by edge\n",i,i+1);
 			for(int j=0;j<cnode->trf.Count();j++) { // for all transfrags going through child
 				int t=cnode->trf[j];
+				if (transfrag[t]->is_artifact) {
+					// fprintf(stderr, "2. Found artifact transfrag %d with abundance %f\n", t, transfrag[t]->abundance);
+					continue;
+				}
 				if(transfrag[t]->abundance<epsilon) { // this transfrag was used before -> needs to be deleted
 					if(!mixedMode) { cnode->trf.Delete(j); j--;}
 					else transfrag[t]->abundance=0;
@@ -8138,6 +8212,10 @@ bool back_to_source_fast_long(int i,GVec<int>& path,int& minpath,int& maxpath,GB
 
 				for(int j=0;j<pnode->trf.Count();j++) { // for all transfrags going through parent
 					int t=pnode->trf[j];
+					if (transfrag[t]->is_artifact) {
+						// fprintf(stderr, "3. Found artifact transfrag %d with abundance %f\n", t, transfrag[t]->abundance);
+						continue;
+					}
 					if(transfrag[t]->abundance<epsilon) { // this transfrag was used before -> needs to be deleted
 						if(!mixedMode) { pnode->trf.Delete(j);j--;}
 						else transfrag[t]->abundance=0;
@@ -8201,6 +8279,10 @@ bool back_to_source_fast_long(int i,GVec<int>& path,int& minpath,int& maxpath,GB
 			if(i-1<startpath) startpath=i-1;
 			for(int j=0;j<pnode->trf.Count();j++) { // for all transfrags going through parent
 				int t=pnode->trf[j];
+				if (transfrag[t]->is_artifact) {
+					// fprintf(stderr, "4. Found artifact transfrag %d with abundance %f\n", t, transfrag[t]->abundance);
+					continue;
+				}
 				if(transfrag[t]->abundance<epsilon) { // this transfrag was used before -> needs to be deleted
 					if(!mixedMode) { pnode->trf.Delete(j); j--;}
 					else transfrag[t]->abundance=0;
@@ -10211,6 +10293,10 @@ void parse_trflong(int gno,int geneno,char sign,GVec<CTransfrag> &keeptrf,GVec<i
 		if(tocheck)  { // try to see if you can rescue transfrag
 			if(!mixedMode || (!guided || transfrag[t]->guide || (no2gnode[transfrag[t]->nodes[0]]->parent[0]==0 &&
 					no2gnode[transfrag[t]->nodes.Last()]->child.Last()==gno-1)) )
+
+				if(transfrag[t]->is_artifact) {
+					continue;
+				}
 				// only accept long transfrags that are linked to source and sink
 				checktrf.Add(t);
 		}
@@ -13927,22 +14013,11 @@ void shortenLastExon(CReadAln &rd) {
     //          old_end, rd.end);
 }
 
-void addForbiddenPositions(int n, int pos, int range, GHashMap<uint, GVec<int>*>& forbidList) {
+void addForbiddenPositions(int pos, int range, GHashSet<uint>& forbidList) {
     for(int i = pos - range; i <= pos + range; ++i) {
         if(i >= 0) {
-            uint key = (uint)i;
-            // Check if the key exists
-            GVec<int>* pVal = forbidList.Find(key);
-            if (pVal == NULL) {
-                 // Key not found, create a new GVec<int> on the heap
-                 GVec<int>* newList = new GVec<int>();
-                 newList->Add(n);
-                 // Add the pointer to the map
-                 forbidList.Add(key, newList);
-            } else {
-                 // Key found, pVal is the GVec<int>*, add n to the existing vector
-                 pVal->Add(n); // Changed (*pVal)-> to pVal->
-            }
+            forbidList.Add((uint)i);
+
         }
     }
 }
@@ -14831,12 +14906,12 @@ int build_graphs(BundleData* bdata) {
 			if (rd.strand == 0) {
 				if (rd.aligned_polyA && !rd.unaligned_polyA) {
 					shortenLastExon(rd);
-					addForbiddenPositions(n, end, 3, bdata->forbid_snk);
+					addForbiddenPositions(end, 3, bdata->forbid_snk);
 				}
 					
 				if (rd.aligned_polyT && !rd.unaligned_polyT) { 
 					shortenFirstExon(rd);
-					addForbiddenPositions(n, start, 3, bdata->forbid_src);
+					addForbiddenPositions(start, 3, bdata->forbid_src);
 				}
 			}
 				
@@ -14844,15 +14919,15 @@ int build_graphs(BundleData* bdata) {
 			if (rd.strand == 1) {
 				if (rd.aligned_polyA && !rd.unaligned_polyA) {
 					shortenLastExon(rd);
-					addForbiddenPositions(n, end, 3, bdata->forbid_snk);
+					addForbiddenPositions(end, 3, bdata->forbid_snk);
 				}
 			} 
-			
+
 			// Reverse strand
 			else if (rd.strand == -1) {
 				if (rd.aligned_polyT && !rd.unaligned_polyT) {
 					shortenFirstExon(rd);
-					addForbiddenPositions(n, start, 3, bdata->forbid_src);
+					addForbiddenPositions(start, 3, bdata->forbid_src);
 				}
 			}
 		}
@@ -15500,17 +15575,15 @@ int build_graphs(BundleData* bdata) {
 						if (bundle[sno][b]->startnode == bundle[sno][b]->lastnodeid) {
 
 							if (bdata->forbid_src.hasKey(bnode[sno][bundle[sno][b]->startnode]->start)) {
-								GStr refname = bdata->refseq.chars();
-								uint start = bnode[sno][bundle[sno][b]->startnode]->start;
-								uint end = bnode[sno][bundle[sno][b]->lastnodeid]->end;
-								GMessage("Bundle %d has one node and start is in forbid_src: %s:%d-%d\n", b, refname, start, end);
+								// uint start = bnode[sno][bundle[sno][b]->startnode]->start;
+								// uint end = bnode[sno][bundle[sno][b]->lastnodeid]->end;
+								// GMessage("Bundle %d has one node and start is in forbid_src: %d-%d\n", b,  start, end);
 								continue;
 							}
 							if (bdata->forbid_snk.hasKey(bnode[sno][bundle[sno][b]->lastnodeid]->end)) {
-								GStr refname = bdata->refseq.chars();
-								uint start = bnode[sno][bundle[sno][b]->startnode]->start;
-								uint end = bnode[sno][bundle[sno][b]->lastnodeid]->end;
-								GMessage("Bundle %d has one node and end is in forbid_snk: %s:%d-%d\n", b, refname, start, end);
+								// uint start = bnode[sno][bundle[sno][b]->startnode]->start;
+								// uint end = bnode[sno][bundle[sno][b]->lastnodeid]->end;
+								// GMessage("Bundle %d has one node and end is in forbid_snk: %d-%d\n", b, start, end);
 								continue;
 							}
 						}
@@ -15568,7 +15641,7 @@ int build_graphs(BundleData* bdata) {
     	// compute probabilities for stranded bundles
 
     	for (int n=0;n<readlist.Count();n++) {
-
+	
 	  /*if(readlist[n]->unitig) { // super-reads are unpaired
     			float srcov=0;
     			for(int i=0;i<readlist[n]->segs.Count();i++)

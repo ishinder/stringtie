@@ -555,17 +555,20 @@ void processRead(int currentstart, int currentend, BundleData& bdata,
 
 	//check the last exon of the read to determine its % of poly rA/rU
 	//if it is above 80%, likely this is a polyA tail aligned as an exon
-	float polyA_percentage = check_last_exon_polyA(brec);
-	if (polyA_percentage >= 0.8) {
-		//remove the last exon of the read
-		brec.exons.Delete(brec.exons.Count() - 1);
-		brec.end = brec.exons.Last().end;
-	}
-	float polyT_percentage = check_first_exon_polyT(brec);
-	if (polyT_percentage >= 0.8) {
-		//remove the first exon of the read
-		brec.exons.Delete(0);
-		brec.start = brec.exons.First().start;
+	if (longr && brec.exons.Count() >= 2 && !ovlpguide) {
+
+		float polyA_percentage = check_last_exon_polyA(brec);
+		if (polyA_percentage >= 0.8) {
+			//remove the last exon of the read
+			brec.exons.Delete(brec.exons.Count() - 1);
+			brec.end = brec.exons.Last().end;
+		}
+		float polyT_percentage = check_first_exon_polyT(brec);
+		if (polyT_percentage >= 0.8) {
+			//remove the first exon of the read
+			brec.exons.Delete(0);
+			brec.start = brec.exons.First().start;
+		}
 	}
 
 
@@ -4823,7 +4826,7 @@ void get_fragment_pattern(GList<CReadAln>& readlist,int n, int np,float readcov,
 								}
 								t = update_abundance(s,rgno[r],graphno[s][rgno[r]],gpos[s][rgno[r]],rpat,rprop[s]*readcov,node,transfrag,tr2no,
 										no2gnode[s][rgno[r]],rstart, rend,readlist[n]->unitig,readlist[n]->longread);
-								t->is_artifact = is_artifact;
+								if (t) t->is_artifact = is_artifact;
 								rpat.reset();
 								rpat[rnode[r][j]]=1; // restart the pattern
 								clear_rnode=j;
@@ -4887,7 +4890,8 @@ void get_fragment_pattern(GList<CReadAln>& readlist,int n, int np,float readcov,
 			else { // pair has no valid pattern in this graph
 				t = update_abundance(s,rgno[r],graphno[s][rgno[r]],gpos[s][rgno[r]],rpat,rprop[s]*readcov,rnode[r],transfrag,tr2no,
 						no2gnode[s][rgno[r]],rstart, rend,readlist[n]->unitig,readlist[n]->longread);
-				t->is_artifact = is_artifact;
+				if (t) {t->is_artifact = is_artifact;}
+				
 			}
 		}
 

@@ -182,11 +182,15 @@ struct CReadAln:public GSeg {
 		TAlnInfo* tinfo;
 		bool in_guide;
 	};
+	bool aligned_polyT:1;
+	bool aligned_polyA:1;
+	bool unaligned_polyT:1;
+	bool unaligned_polyA:1;
 
 	CReadAln(char _strand=0, short int _nh=0,
 			int rstart=0, int rend=0, TAlnInfo* tif=NULL): GSeg(rstart, rend), //name(rname),
 					strand(_strand),nh(_nh), len(0), read_count(0), unitig(false),longread(false),pair_count(),pair_idx(),
-					segs(), juncs(false), tinfo(tif) { }
+					segs(), juncs(false), tinfo(tif), aligned_polyT(false), aligned_polyA(false), unaligned_polyT(false), unaligned_polyA(false) { }
 	CReadAln(CReadAln &rd):GSeg(rd.start,rd.end) { // copy contructor
 		strand=rd.strand;
 		nh=rd.nh;
@@ -335,12 +339,14 @@ struct BundleData {
  GList<CPrediction> pred;
  int numNascents=0; //number of nascent transcripts generated for this bundle
  RC_BundleData* rc_data; // read count data for this bundle
+ GHashSet<uint> forbid_src;  
+ GHashSet<uint> forbid_snk;
  BundleData():status(BUNDLE_STATUS_CLEAR), idx(0), start(0), end(0),
 		 numreads(0),
 		 num_fragments(0), frag_len(0),sum_cov(0),covflags(0),
 		 refseq(), gseq(NULL), readlist(false,true), //bpcov(1024),
 		 junction(true, true, true),
-		 keepguides(false), ptfs(false), pred(false), rc_data(NULL) {
+		 keepguides(false), ptfs(false), pred(false), rc_data(NULL), forbid_src(), forbid_snk() {
 	 for(int i=0;i<3;i++) 	bpcov[i].setCapacity(4096);
  }
 

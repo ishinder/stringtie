@@ -325,196 +325,76 @@ bool mismatch_anchor(CReadAln *rd,char *mdstr,int refstart, bam1_t *b) {
 	return false;
 }
 
-// Constants for polyA/T detection
-const int MAX_WINDOW_SIZE = 25;     // Window size for checking poly sequences
-const double MIN_POLY_PERCENT = 0.8; // Minimum percentage of A's or T's required (20/25)
-const int MIN_POLY_LENGTH = 10;     // Minimum number of A's or T's required
-const int MAX_MISMATCHES = MAX_WINDOW_SIZE * (1 - MIN_POLY_PERCENT);// Maximum allowed non-A or non-T bases
+// function detects 10-20 consecutive A's with  80-90% of the bases being A at the match end of the single long read and exclude it from the alignment
+bool genome_polyA_terminated(GSamRecord& brec) {
 
-// Check for consecutive T's at start of read
-bool check_aligned_polyT_start(GSamRecord& brec) {
-    char *readseq = brec.sequence();
-	if (!readseq) return false;
-    int len = strlen(readseq);
-    
-    // Adjust start position for left softclipping
-    int start_pos = brec.clipL;
-    int t_count = 0;
-    int pos_count = 0;
-    
-    while(pos_count < MAX_WINDOW_SIZE && (start_pos + pos_count) < len) {
-        if(readseq[start_pos + pos_count] == 'T') t_count++;
-		pos_count++; // pos_count is the number of bases I have checked so far
-        
-        if(pos_count - t_count > MAX_MISMATCHES) {
-            GFREE(readseq);
-                    return false;
-                }
-        
-        if(t_count >= MIN_POLY_LENGTH && (double)t_count / pos_count >= MIN_POLY_PERCENT) {
-            GFREE(readseq);
-                    return true;
-                }
-            }
-    
-    GFREE(readseq);
-    return false;
+	char *readseq=brec.sequence();
+	int len = strlen(readseq);
+
+	// check if there is a polyA tail
+	if(brec.clipR) { // adjust length for softclipping
+		len-=brec.clipR;
+	}
+
+	/*// Ensure there are at least 10 characters in the string --> not likely for long reads
+	if(len<10) {
+		GFREE(readseq);
+		return(false);
+	}*/
+
+	int start_pos = len - 1; // end of potential end sequence
+
+	int a_count=0;
+	int end_count=0;
+	while(start_pos>=0 && end_count<25) { // 20/25=0.8
+		end_count++;
+		if(readseq[start_pos]=='A') a_count++;
+
+		if(end_count-a_count>5) {
+			break; // no need to check further if more than 5 characters were non A's
+		}
+
+		// Check if 'A' characters are over 80%
+		if (a_count>=10 && (double)a_count / end_count >= 0.8) {
+			GFREE(readseq);
+			return(true); // No need to check further if a valid end seq is found
+		}
+
+		start_pos--;
+	}
+
+	// check if there is a polyT start
+	start_pos = brec.clipL;
+
+	/*// Ensure there are at least 10 characters in the string --> not likely
+	if(len-brec.clipL<10) {
+		GFREE(readseq);
+		return(false);
+	}*/
+
+	a_count=0;
+	end_count=0;
+
+	while(start_pos<len && end_count<25) { // 20/25=0.8
+		end_count++;
+		if(readseq[start_pos]=='T') a_count++;
+
+		if(end_count-a_count>5) {
+			break; // no need to check further if more than 5 characters were non T's
+		}
+
+		// Check if 'T' characters are over 80%
+		if (a_count>=10 && (double)a_count / end_count >= 0.8) {
+			GFREE(readseq);
+			return(true); // No need to check further if a valid end seq is found
+		}
+
+		start_pos++;
+	}
+
+	GFREE(readseq);
+	return(false);
 }
-
-// Check for consecutive A's at end of read with specified threshold percentage
-bool check_aligned_polyA_end(GSamRecord& brec) {
-    char *readseq = brec.sequence();
-	if (!readseq) return false;
-    int len = strlen(readseq);
-    
-    // Adjust end position for right softclipping
-    int end_pos = len - brec.clipR - 1;
-    int a_count = 0;
-    int pos_count = 0;
-    
-    while(end_pos >= 0 && pos_count < MAX_WINDOW_SIZE) {
-        pos_count++;
-        if(readseq[end_pos] == 'A') a_count++;
-        
-        if(pos_count - a_count > MAX_MISMATCHES) {
-            GFREE(readseq);
-                    return false;
-                }
-        
-        if(a_count >= MIN_POLY_LENGTH && (double)a_count / pos_count >= MIN_POLY_PERCENT) {
-            GFREE(readseq);
-                    return true;
-                }
-        end_pos--;
-    }
-    
-    GFREE(readseq);
-    return false;
-}
-
-
-bool check_unaligned_polyA_end(GSamRecord& brec) {
-    char *readseq = brec.sequence();
-	if (!readseq) return false;
-    int len = strlen(readseq);
-
-    // Number of bases soft-clipped at the right end:
-    // If clipR=0, there's no unaligned segment to check.
-    int clip_len = brec.clipR;
-    if (clip_len <= 0) {
-        GFREE(readseq);
-    return false;
-}
-
-    // Start of the unaligned region is the first base after the aligned portion:
-    // For example, if read length=1000 and clipR=50, the unaligned region is [950..999]
-    int start_pos = len - clip_len; // index of first unaligned base
-    int pos_count = 0;
-    int a_count = 0;
-
-    while (pos_count < MAX_WINDOW_SIZE && (start_pos + pos_count) < len) {
-        if (readseq[start_pos + pos_count] == 'A') {
-            a_count++;
-        }
-        pos_count++;
-
-        // If mismatches exceed MAX_MISMATCHES, stop
-        if ((pos_count - a_count) > MAX_MISMATCHES) {
-            GFREE(readseq);
-            return false;
-        }
-
-        // If we've found enough A's at high enough percentage:
-        if (a_count >= MIN_POLY_LENGTH && (double)a_count / pos_count >= MIN_POLY_PERCENT) {
-            GFREE(readseq);
-            return true;
-        }
-    }
-
-    GFREE(readseq);
-    return false;
-}
-
-bool check_unaligned_polyT_start(GSamRecord& brec) {
-    char *readseq = brec.sequence();
-	if (!readseq) return false;
-    int len = strlen(readseq);
-
-    // Number of bases soft-clipped at the left end:
-    // If clipL=0, there's no unaligned segment at the start.
-    int clip_len = brec.clipL;
-    if (clip_len <= 0) {
-        GFREE(readseq);
-        return false;
-    }
-
-    // We'll scan from index 0 up to clip_len - 1 (the unaligned portion)
-    // or up to MAX_WINDOW_SIZE, whichever is smaller.
-    int pos_count = 0;
-    int t_count = 0;
-    int max_check = (clip_len < MAX_WINDOW_SIZE) ? clip_len : MAX_WINDOW_SIZE;
-
-    while (pos_count < max_check) {
-        if (readseq[pos_count] == 'T') {
-            t_count++;
-        }
-        pos_count++;
-
-        // If mismatches exceed MAX_MISMATCHES, stop
-        if ((pos_count - t_count) > MAX_MISMATCHES) {
-            GFREE(readseq);
-            return false;
-        }
-
-        if (t_count >= MIN_POLY_LENGTH && (double)t_count / pos_count >= MIN_POLY_PERCENT) {
-            GFREE(readseq);
-		return true;
-        }
-    }
-
-    GFREE(readseq);
-    return false;
-}
-
-float check_last_exon_polyA(GSamRecord& brec) {
-    char* readseq = brec.sequence();
-    if (!readseq) return 0;
-    int seqLen = strlen(readseq);
-
-    // compute read‐relative start/end of the last exon
-    int exonLen  = brec.exons.Last().end - brec.exons.Last().start + 1;
-    int endIdx   = seqLen - brec.clipR - 1;
-    int startIdx = endIdx - exonLen + 1;
-    if (startIdx < 0) startIdx = 0;
-
-    int a_count = 0, pos_count = 0;
-    for (int i = startIdx; i <= endIdx; ++i) {
-        if (readseq[i] == 'A') ++a_count;
-        ++pos_count;
-    }
-    GFREE(readseq);
-    return pos_count ? float(a_count) / pos_count : 0;
-}
-
-float check_first_exon_polyT(GSamRecord& brec) {
-    char* readseq = brec.sequence();
-    if (!readseq) return 0;
-    int seqLen = strlen(readseq);
-
-    int exonLen  = brec.exons.First().end - brec.exons.First().start + 1;
-    int startIdx = brec.clipL;               // first aligned base in the read
-    int endIdx   = startIdx + exonLen - 1;
-    if (endIdx >= seqLen) endIdx = seqLen - 1;
-
-    int t_count = 0, pos_count = 0;
-    for (int i = startIdx; i <= endIdx; ++i) {
-        if (readseq[i] == 'T') ++t_count;
-        ++pos_count;
-    }
-    GFREE(readseq);
-    return pos_count ? float(t_count) / pos_count : 0;
-}
-
 
 void processRead(int currentstart, int currentend, BundleData& bdata,
 		 GHash<int>& hashread,  GReadAlnData& alndata,bool ovlpguide) { // some false positives should be eliminated here in order to break the bundle
@@ -543,29 +423,9 @@ void processRead(int currentstart, int currentend, BundleData& bdata,
 	bool longr=false;
 	if(longreads|| brec.uval) longr=true; // second alignment is always from mixed reads
 
-	//sinlge exon reads do not contribute to junction information or bpcov.
-	//2exon reads contribute a junction, but are likely alignment artifacts.
-	if(longr && brec.exons.Count()<=2 && !ovlpguide) {
-		bool neg_artifact = check_aligned_polyT_start(brec); // || !check_unaligned_polyT_start(brec);
-		bool pos_artifact = check_aligned_polyA_end(brec); //|| !check_unaligned_polyA_end(brec);
-		if(neg_artifact || pos_artifact) {
-			return;
-		}
-	}
-
-	//check the last exon of the read to determine its % of poly rA/rU
-	//if it is above 80%, likely this is a polyA tail aligned as an exon
-	float polyA_percentage = check_last_exon_polyA(brec);
-	if (polyA_percentage >= 0.8) {
-		//remove the last exon of the read
-		brec.exons.Delete(brec.exons.Count() - 1);
-		brec.end = brec.exons.Last().end;
-	}
-	float polyT_percentage = check_first_exon_polyT(brec);
-	if (polyT_percentage >= 0.8) {
-		//remove the first exon of the read
-		brec.exons.Delete(0);
-		brec.start = brec.exons.First().start;
+	//if(longr && brec.exons.Count()==1) { // if unspliced long read, check to see if it was just picked up by mistake; maybe not for mixed mode?
+	if(longr && brec.exons.Count()==1 && !ovlpguide) { // if unspliced long read, check to see if it was just picked up by mistake; maybe not for mixed mode?
+		if(genome_polyA_terminated(brec)) return; // skip read if it's polyA terminated on the genome
 	}
 
 
@@ -607,14 +467,6 @@ void processRead(int currentstart, int currentend, BundleData& bdata,
 			if(len<mintranscriptlen) return;
 		}
 		readaln=new CReadAln(strand, nh, brec.start, brec.end, alndata.tinfo);
-
-		if(longr) {
-			readaln->aligned_polyT = check_aligned_polyT_start(brec);
-			readaln->aligned_polyA = check_aligned_polyA_end(brec);
-			readaln->unaligned_polyT = check_unaligned_polyT_start(brec);
-			readaln->unaligned_polyA = check_unaligned_polyA_end(brec);
-		}
-
 		readaln->longread=longr;
 		alndata.tinfo=NULL; //alndata.tinfo was passed to CReadAln
 		for (int i=0;i<brec.exons.Count();i++) {
@@ -3926,12 +3778,6 @@ int create_graph(int refstart,int s,int g,CBundle *bundle,GPVec<CBundlenode>& bn
 	if(!mergeMode) for(int i=1;i<graphno;i++) {
 		float icov=0;
 		if(i>1 && no2gnode[s][g][i]->parent[0]) { // node i has parents, and does not come from source => might need to be linked to source
-			// check if the start position is in forbid_src:
-			if(bdata->forbid_src.hasKey(no2gnode[s][g][i]->start)) {
-				// fprintf(stderr,"skipping source link from node %d because it's in forbid_src\n",i);
-				continue;
-			}
-			
 			/*icov=(get_cov(1,no2gnode[s][g][i]->start-refstart,no2gnode[s][g][i]->end-refstart,bpcov)-
 					get_cov(2-2*s,no2gnode[s][g][i]->start-refstart,no2gnode[s][g][i]->end-refstart,bpcov))/no2gnode[s][g][i]->len();*/
 			icov=get_cov_sign(2*s,no2gnode[s][g][i]->start-refstart,no2gnode[s][g][i]->end-refstart,bpcov)/no2gnode[s][g][i]->len();
@@ -3961,11 +3807,6 @@ int create_graph(int refstart,int s,int g,CBundle *bundle,GPVec<CBundlenode>& bn
 
 		if(i<graphno-1) {
 			if(no2gnode[s][g][i]->child.Count()) { // might need to be linked to sink
-				//check if the end position is in forbid_snk:
-				if(bdata->forbid_snk.hasKey(no2gnode[s][g][i]->end)) {
-					// fprintf(stderr,"skipping sink link from node %d because it's in forbid_snk\n",i);
-					continue;
-				}
 				bool addsink=true;
 				for(int j=0;j<sink->parent.Count();j++) {
 					if(sink->parent[j]==i) {
@@ -4659,24 +4500,7 @@ void get_fragment_pattern(GList<CReadAln>& readlist,int n, int np,float readcov,
 	fprintf(stderr,"\n");*/
 	uint rstart=readlist[n]->start; // this only works for unpaired long reads -> I will have to take into account the pair if I want to do it for all reads
 	uint rend=readlist[n]->end;
-	char strand = readlist[n]->strand;
-	bool is_artifact = false;
 	if(np>-1 && readlist[np]->end>rend) rend=readlist[np]->end;
-	CTransfrag *t=NULL;
-
-	if (readlist[n]->longread) {
-		if (strand == 0) {
-			is_artifact = (readlist[n]->aligned_polyA && !readlist[n]->unaligned_polyA) || 
-						(readlist[n]->aligned_polyT && !readlist[n]->unaligned_polyT);
-		}
-		else if (strand == 1) {
-			is_artifact = (readlist[n]->aligned_polyA && !readlist[n]->unaligned_polyA);
-		}
-		else if (strand == -1) {
-			is_artifact = (readlist[n]->aligned_polyT && !readlist[n]->unaligned_polyT);
-		}
-	}	
-
 
 	float rprop[2]={0,0}; // by default read does not belong to any strand
 	// compute proportions of unstranded read associated to strands
@@ -4821,9 +4645,8 @@ void get_fragment_pattern(GList<CReadAln>& readlist,int n, int np,float readcov,
 								for(int o=clear_rnode;o<j;o++) {
 									node.Add(rnode[r][o]);
 								}
-								t = update_abundance(s,rgno[r],graphno[s][rgno[r]],gpos[s][rgno[r]],rpat,rprop[s]*readcov,node,transfrag,tr2no,
+								update_abundance(s,rgno[r],graphno[s][rgno[r]],gpos[s][rgno[r]],rpat,rprop[s]*readcov,node,transfrag,tr2no,
 										no2gnode[s][rgno[r]],rstart, rend,readlist[n]->unitig,readlist[n]->longread);
-								t->is_artifact = is_artifact;
 								rpat.reset();
 								rpat[rnode[r][j]]=1; // restart the pattern
 								clear_rnode=j;
@@ -4885,9 +4708,8 @@ void get_fragment_pattern(GList<CReadAln>& readlist,int n, int np,float readcov,
 				pgno[p]=-1;
 			}
 			else { // pair has no valid pattern in this graph
-				t = update_abundance(s,rgno[r],graphno[s][rgno[r]],gpos[s][rgno[r]],rpat,rprop[s]*readcov,rnode[r],transfrag,tr2no,
+				update_abundance(s,rgno[r],graphno[s][rgno[r]],gpos[s][rgno[r]],rpat,rprop[s]*readcov,rnode[r],transfrag,tr2no,
 						no2gnode[s][rgno[r]],rstart, rend,readlist[n]->unitig,readlist[n]->longread);
-				t->is_artifact = is_artifact;
 			}
 		}
 
@@ -5961,37 +5783,7 @@ void process_transfrags(int s, int gno,int edgeno,GPVec<CGraphnode>& no2gnode,GP
 		//GBitVec guidesource(gno);
 		//GBitVec guidesink(gno);
 		//for(int i=0;i<keeptrf.Count();i++) {
-
-		// check if all transfrags in group are artifacts
-		GVec<int> totalTransfrags;
-		GVec<int> artifactTransfrags;
-		GVec<int> guideTransfrags;
-
-		totalTransfrags.Resize(keeptrf.Count(), 0);
-		artifactTransfrags.Resize(keeptrf.Count(), 0);
-		guideTransfrags.Resize(keeptrf.Count(), 0);
-
-		// Calculate group statistics for each keeptrf entry
-		for(int i=0; i<keeptrf.Count(); i++) {
-			totalTransfrags[i] = keeptrf[i].group.Count();
-			
-			// Count artifacts
-			for(int j=0; j<keeptrf[i].group.Count(); j++) {
-				if(transfrag[keeptrf[i].group[j]]->is_artifact) {
-					artifactTransfrags[i]++;
-				}
-				if (transfrag[keeptrf[i].group[j]]->guide) {
-					guideTransfrags[i]++;
-				}
-			}
-		}
-
 		for(int i=keeptrf.Count()-1;i>=0;i--) { // I add the kept transcripts to trflong from least significant to most in order to make deletion easier
-
-			//check if artifactTransfrags[i] == totalTransfrags[i], and guideTransfrags[i] == 0
-			if(artifactTransfrags[i] == totalTransfrags[i] && !guideTransfrags[i]) {
-				continue;
-			}
 
 			//fprintf(stderr,"Build source/sink for transfrag %d\n",keeptrf[i].t);
 			int n1=transfrag[keeptrf[i].t]->nodes[0];
@@ -6081,12 +5873,6 @@ void process_transfrags(int s, int gno,int edgeno,GPVec<CGraphnode>& no2gnode,GP
 		for(int i=keeptrf.Count()-1;i>=0;i--) {
 			int n1=transfrag[keeptrf[i].t]->nodes[0];
 			int n2=transfrag[keeptrf[i].t]->nodes.Last();
-			
-			//check if artifactTransfrags[i] == totalTransfrags[i], and guideTransfrags[i] == 0
-			if(artifactTransfrags[i] == totalTransfrags[i] && !guideTransfrags[i]) {
-				continue;
-			}
-
 
 			if(transfrag[keeptrf[i].t]->guide || ((no2gnode[n1]->hardstart || (hassource[n1]>=0 && keepsource[n1])) && (no2gnode[n2]->hardend ||(hassink[n2]>=0 && keepsink[n2]))))
 				trflong.Add(keeptrf[i].t);
@@ -7984,10 +7770,6 @@ bool fwd_to_sink_fast_long(int i,GVec<int>& path,int& minpath,int& maxpath,GBitV
 				//else GError("Found parent-child: %d-%d not linked by edge!\n",i,inode->child[c]);
 				for(int j=0;j<cnode->trf.Count();j++) { // for all transfrags going through child
 					int t=cnode->trf[j];
-					if (transfrag[t]->is_artifact) {
-						// fprintf(stderr, "1.Found artifact transfrag %d with abundance %f\n", t, transfrag[t]->abundance);
-						continue;
-					}
 					if(transfrag[t]->abundance<epsilon) { // this transfrag was used before -> needs to be deleted
 						if(!mixedMode) { cnode->trf.Delete(j); j--;}
 						else transfrag[t]->abundance=0;
@@ -8050,10 +7832,6 @@ bool fwd_to_sink_fast_long(int i,GVec<int>& path,int& minpath,int& maxpath,GBitV
 			//else GError("Found parent-child: %d-%d not linked by edge\n",i,i+1);
 			for(int j=0;j<cnode->trf.Count();j++) { // for all transfrags going through child
 				int t=cnode->trf[j];
-				if (transfrag[t]->is_artifact) {
-					// fprintf(stderr, "2. Found artifact transfrag %d with abundance %f\n", t, transfrag[t]->abundance);
-					continue;
-				}
 				if(transfrag[t]->abundance<epsilon) { // this transfrag was used before -> needs to be deleted
 					if(!mixedMode) { cnode->trf.Delete(j); j--;}
 					else transfrag[t]->abundance=0;
@@ -8212,10 +7990,6 @@ bool back_to_source_fast_long(int i,GVec<int>& path,int& minpath,int& maxpath,GB
 
 				for(int j=0;j<pnode->trf.Count();j++) { // for all transfrags going through parent
 					int t=pnode->trf[j];
-					if (transfrag[t]->is_artifact) {
-						// fprintf(stderr, "3. Found artifact transfrag %d with abundance %f\n", t, transfrag[t]->abundance);
-						continue;
-					}
 					if(transfrag[t]->abundance<epsilon) { // this transfrag was used before -> needs to be deleted
 						if(!mixedMode) { pnode->trf.Delete(j);j--;}
 						else transfrag[t]->abundance=0;
@@ -8279,10 +8053,6 @@ bool back_to_source_fast_long(int i,GVec<int>& path,int& minpath,int& maxpath,GB
 			if(i-1<startpath) startpath=i-1;
 			for(int j=0;j<pnode->trf.Count();j++) { // for all transfrags going through parent
 				int t=pnode->trf[j];
-				if (transfrag[t]->is_artifact) {
-					// fprintf(stderr, "4. Found artifact transfrag %d with abundance %f\n", t, transfrag[t]->abundance);
-					continue;
-				}
 				if(transfrag[t]->abundance<epsilon) { // this transfrag was used before -> needs to be deleted
 					if(!mixedMode) { pnode->trf.Delete(j); j--;}
 					else transfrag[t]->abundance=0;
@@ -10293,10 +10063,6 @@ void parse_trflong(int gno,int geneno,char sign,GVec<CTransfrag> &keeptrf,GVec<i
 		if(tocheck)  { // try to see if you can rescue transfrag
 			if(!mixedMode || (!guided || transfrag[t]->guide || (no2gnode[transfrag[t]->nodes[0]]->parent[0]==0 &&
 					no2gnode[transfrag[t]->nodes.Last()]->child.Last()==gno-1)) )
-
-				if(transfrag[t]->is_artifact) {
-					continue;
-				}
 				// only accept long transfrags that are linked to source and sink
 				checktrf.Add(t);
 		}
@@ -13975,53 +13741,6 @@ void continue_read(GList<CReadAln>& readlist,int n,int idx) {
 	}
 }
 
-// Helper function to shorten first exon to a single base and update read properties
-void shortenFirstExon(CReadAln &rd) {
-    int nEx = rd.segs.Count();
-    if(nEx < 2) return;
-    
-    // uint old_start = rd.segs[0].start;
-    rd.segs[0].start = rd.segs[0].end - 1;
-    rd.start = rd.segs[0].start;
-    
-    // Recalculate read length
-    rd.len = 0;
-    for(int i = 0; i < nEx; i++) {
-        rd.len += rd.segs[i].end - rd.segs[i].start + 1;
-    }
-    
-    // GMessage("Shortened first exon at position %d to a single basepair and changed start position to %d\n", 
-    //          old_start, rd.start);
-}
-
-// Helper function to shorten last exon to a single base and update read properties
-void shortenLastExon(CReadAln &rd) {
-    int nEx = rd.segs.Count();
-    if(nEx < 2) return;
-    
-    // uint old_end = rd.segs[nEx-1].end;
-    rd.segs[nEx-1].end = rd.segs[nEx-1].start + 1;
-    rd.end = rd.segs[nEx-1].end;
-    
-    // Recalculate read length
-    rd.len = 0;
-    for(int i = 0; i < nEx; i++) {
-        rd.len += rd.segs[i].end - rd.segs[i].start + 1;
-    }
-    
-    // GMessage("Shortened last exon at position %d to a single basepair and changed end position to %d\n", 
-    //          old_end, rd.end);
-}
-
-void addForbiddenPositions(int pos, int range, GHashSet<uint>& forbidList) {
-    for(int i = pos - range; i <= pos + range; ++i) {
-        if(i >= 0) {
-            forbidList.Add((uint)i);
-
-        }
-    }
-}
-
 int build_graphs(BundleData* bdata) {
 	int refstart = bdata->start;
 	GList<CReadAln>& readlist = bdata->readlist;
@@ -14624,7 +14343,6 @@ int build_graphs(BundleData* bdata) {
 
 	bool resort=false;
 	int njunc=junction.Count();
-
 	for (int n=0;n<readlist.Count();n++) {
 		CReadAln & rd=*(readlist[n]);
 
@@ -14881,66 +14599,22 @@ int build_graphs(BundleData* bdata) {
 			for(i=0;i<rd.juncs.Count();i++) { fprintf(stderr," %d-%d:%d",rd.segs[i].start,rd.segs[i].end,rd.juncs[i]->strand);}
 			fprintf(stderr," %d-%d\n",rd.segs[i].start,rd.segs[i].end);*/
 
-		// count fragments
-		if(!rd.unitig)
-			bdata->frag_len+=rd.len*rd.read_count; // TODO: adjust this to work with FPKM for super-reads and Pacbio
-		double single_count=rd.read_count;
-		if(keep) for(int i=0;i<rd.pair_idx.Count();i++) {
-			// I am not counting the fragment if I saw the pair before and it wasn't deleted
-			if(rd.pair_idx[i]!=-1 && n>rd.pair_idx[i] && readlist[rd.pair_idx[i]]->nh) {// only if read is paired and it comes first in the pair I count the fragments
-				single_count-=rd.pair_count[i];
-			}
-		}
-		if(!rd.unitig && single_count>epsilon) {
-			bdata->num_fragments+=single_count; // TODO: FPKM will not work for super-reads here because I have multiple fragments in
-												// a super-read -> I might want to re-estimate this from coverage and have some input for read length; or I might only use TPM
-		}
-
-		if (rd.longread) {
-			//TODO: can also remove RT drop-off at poly(rA/rU)
-			// unknown strand:
-			
-			int start = (int)rd.start;
-			int end = (int)rd.end;
-
-			if (rd.strand == 0) {
-				if (rd.aligned_polyA && !rd.unaligned_polyA) {
-					shortenLastExon(rd);
-					addForbiddenPositions(end, 3, bdata->forbid_snk);
-				}
-					
-				if (rd.aligned_polyT && !rd.unaligned_polyT) { 
-					shortenFirstExon(rd);
-					addForbiddenPositions(start, 3, bdata->forbid_src);
-				}
-			}
-				
-			// Forward strand
-			if (rd.strand == 1) {
-				if (rd.aligned_polyA && !rd.unaligned_polyA) {
-					shortenLastExon(rd);
-					addForbiddenPositions(end, 3, bdata->forbid_snk);
-				}
-			} 
-
-			// Reverse strand
-			else if (rd.strand == -1) {
-				if (rd.aligned_polyT && !rd.unaligned_polyT) {
-					shortenFirstExon(rd);
-					addForbiddenPositions(start, 3, bdata->forbid_src);
-				}
-			}
-		}
-	}
-
-	//if longreads, then re-sort the readlist
-	//TODO: if we add an is_polyA parameter, then we would need to make this a condition.
-	if(longreads) {
-		readlist.Sort();
-	}
-
-	for (int n = 0; n < readlist.Count(); n++) {
 			color=add_read_to_group(n,readlist,color,group,currgroup,startgroup,readgroup,equalcolor,merge);
+
+			// count fragments
+			if(!rd.unitig)
+				bdata->frag_len+=rd.len*rd.read_count; // TODO: adjust this to work with FPKM for super-reads and Pacbio
+			double single_count=rd.read_count;
+			if(keep) for(int i=0;i<rd.pair_idx.Count();i++) {
+				// I am not counting the fragment if I saw the pair before and it wasn't deleted
+				if(rd.pair_idx[i]!=-1 && n>rd.pair_idx[i] && readlist[rd.pair_idx[i]]->nh) {// only if read is paired and it comes first in the pair I count the fragments
+					single_count-=rd.pair_count[i];
+				}
+			}
+			if(!rd.unitig && single_count>epsilon) {
+				bdata->num_fragments+=single_count; // TODO: FPKM will not work for super-reads here because I have multiple fragments in
+												    // a super-read -> I might want to re-estimate this from coverage and have some input for read length; or I might only use TPM
+			}
 
 			//fprintf(stderr,"now color=%d\n",color);
 		//}
@@ -15569,24 +15243,6 @@ int build_graphs(BundleData* bdata) {
     							bundle2graph,no2gnode,transfrag,trims); // also I need to remember graph coverages somewhere -> probably in the create_graph procedure
     					*
     					*/
-
-						//check for single nodes in bundle, where the start or end are forbidden
-
-						if (bundle[sno][b]->startnode == bundle[sno][b]->lastnodeid) {
-
-							if (bdata->forbid_src.hasKey(bnode[sno][bundle[sno][b]->startnode]->start)) {
-								// uint start = bnode[sno][bundle[sno][b]->startnode]->start;
-								// uint end = bnode[sno][bundle[sno][b]->lastnodeid]->end;
-								// GMessage("Bundle %d has one node and start is in forbid_src: %d-%d\n", b,  start, end);
-								continue;
-							}
-							if (bdata->forbid_snk.hasKey(bnode[sno][bundle[sno][b]->lastnodeid]->end)) {
-								// uint start = bnode[sno][bundle[sno][b]->startnode]->start;
-								// uint end = bnode[sno][bundle[sno][b]->lastnodeid]->end;
-								// GMessage("Bundle %d has one node and end is in forbid_snk: %d-%d\n", b, start, end);
-								continue;
-							}
-						}
     					// create graph then
     					graphno[s][b]=create_graph(refstart,s,b,bundle[sno][b],bnode[sno],junction,ejunction,
     							bundle2graph,no2gnode,transfrag,gpos,bdata,edgeno[s][b],lastgpos[s][b],guideedge,tstartend); // also I need to remember graph coverages somewhere -> probably in the create_graph procedure
@@ -15641,7 +15297,7 @@ int build_graphs(BundleData* bdata) {
     	// compute probabilities for stranded bundles
 
     	for (int n=0;n<readlist.Count();n++) {
-	
+
 	  /*if(readlist[n]->unitig) { // super-reads are unpaired
     			float srcov=0;
     			for(int i=0;i<readlist[n]->segs.Count();i++)

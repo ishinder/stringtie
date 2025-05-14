@@ -438,7 +438,6 @@ bool check_unaligned_polyA_end(GSamRecord& brec) {
 bool check_unaligned_polyT_start(GSamRecord& brec) {
     char *readseq = brec.sequence();
 	if (!readseq) return false;
-    int len = strlen(readseq);
 
     // Number of bases soft-clipped at the left end:
     // If clipL=0, there's no unaligned segment at the start.
@@ -546,8 +545,8 @@ void processRead(int currentstart, int currentend, BundleData& bdata,
 	//sinlge exon reads do not contribute to junction information or bpcov.
 	//2exon reads contribute a junction, but are likely alignment artifacts.
 	if(longr && brec.exons.Count()<=2 && !ovlpguide) {
-		bool neg_artifact = check_aligned_polyT_start(brec); // || !check_unaligned_polyT_start(brec);
-		bool pos_artifact = check_aligned_polyA_end(brec); //|| !check_unaligned_polyA_end(brec);
+		bool neg_artifact = check_aligned_polyT_start(brec);// && !check_unaligned_polyT_start(brec);
+		bool pos_artifact = check_aligned_polyA_end(brec); //&& !check_unaligned_polyA_end(brec);
 		if(neg_artifact || pos_artifact) {
 			return;
 		}
@@ -556,7 +555,6 @@ void processRead(int currentstart, int currentend, BundleData& bdata,
 	//check the last exon of the read to determine its % of poly rA/rU
 	//if it is above 80%, likely this is a polyA tail aligned as an exon
 	if (longr && brec.exons.Count() >= 2 && !ovlpguide) {
-
 		float polyA_percentage = check_last_exon_polyA(brec);
 		if (polyA_percentage >= 0.8) {
 			//remove the last exon of the read
@@ -4667,19 +4665,6 @@ void get_fragment_pattern(GList<CReadAln>& readlist,int n, int np,float readcov,
 	if(np>-1 && readlist[np]->end>rend) rend=readlist[np]->end;
 	CTransfrag *t=NULL;
 
-	if (readlist[n]->longread) {
-		if (strand == 0) {
-			is_artifact = (readlist[n]->aligned_polyA && !readlist[n]->unaligned_polyA) || 
-						(readlist[n]->aligned_polyT && !readlist[n]->unaligned_polyT);
-		}
-		else if (strand == 1) {
-			is_artifact = (readlist[n]->aligned_polyA && !readlist[n]->unaligned_polyA);
-		}
-		else if (strand == -1) {
-			is_artifact = (readlist[n]->aligned_polyT && !readlist[n]->unaligned_polyT);
-		}
-	}	
-
 
 	float rprop[2]={0,0}; // by default read does not belong to any strand
 	// compute proportions of unstranded read associated to strands
@@ -4826,7 +4811,12 @@ void get_fragment_pattern(GList<CReadAln>& readlist,int n, int np,float readcov,
 								}
 								t = update_abundance(s,rgno[r],graphno[s][rgno[r]],gpos[s][rgno[r]],rpat,rprop[s]*readcov,node,transfrag,tr2no,
 										no2gnode[s][rgno[r]],rstart, rend,readlist[n]->unitig,readlist[n]->longread);
-								if (t) t->is_artifact = is_artifact;
+								if (t && readlist[n]->longread) {
+									if(t->longstart && (t->longstart <= rstart || abs((int)(t->longstart - rstart)) < 10)) {
+										t->unaligned_polyT += readlist[n]->unaligned_polyT;
+										t->aligned_polyT += readlist[n]->aligned_polyT;
+									}
+								}
 								rpat.reset();
 								rpat[rnode[r][j]]=1; // restart the pattern
 								clear_rnode=j;
@@ -4890,8 +4880,18 @@ void get_fragment_pattern(GList<CReadAln>& readlist,int n, int np,float readcov,
 			else { // pair has no valid pattern in this graph
 				t = update_abundance(s,rgno[r],graphno[s][rgno[r]],gpos[s][rgno[r]],rpat,rprop[s]*readcov,rnode[r],transfrag,tr2no,
 						no2gnode[s][rgno[r]],rstart, rend,readlist[n]->unitig,readlist[n]->longread);
-				if (t) {t->is_artifact = is_artifact;}
-				
+				if (t && readlist[n]->longread) {
+					if(t->longstart && (t->longstart <= rstart || abs((int)(t->longstart - rstart)) < 10)) {
+						t->unaligned_polyT += readlist[n]->unaligned_polyT;
+						t->aligned_polyT += readlist[n]->aligned_polyT;
+					}
+					
+					//check if the first node of t is smaller than rstart
+					if (t->longend && (t->longend >= rend || abs((int)(t->longend - rend)) < 10)) {
+						t->unaligned_polyA += readlist[n]->unaligned_polyA;
+						t->aligned_polyA += readlist[n]->aligned_polyA;
+					}
+				}		
 			}
 		}
 
@@ -5778,6 +5778,41 @@ void process_transfrags(int s, int gno,int edgeno,GPVec<CGraphnode>& no2gnode,GP
 			}
 		}
 		*/
+		// int unaligned_polyT = 0;
+		// int unaligned_polyA = 0;
+
+		// for(int t1=0;t1<transfrag.Count();t1++) {
+		// 	if (transfrag[t1]->unaligned_polyT) unaligned_polyT++;
+		// 	if (transfrag[t1]->unaligned_polyA) unaligned_polyA++;	
+		// }
+
+		// // if unaligned_polyT or unaligned_polyA is at least 1, then this is a polyadenylated locus,
+		// // in which case, transfrags that DO not have a tail, should not be linked to src or snk.
+		// // this is especially true for single exon genes or 2
+
+		uint total_unaligned_polyT = 0;
+		uint total_aligned_polyT = 0;
+		uint total_aligned_polyA = 0;
+		uint total_unaligned_polyA = 0;
+		uint total_abundance = 0;
+		uint total_guide = 0;
+
+
+		for(int t1=0;t1<transfrag.Count();t1++) {
+				total_unaligned_polyT += transfrag[t1]->unaligned_polyT;
+				total_unaligned_polyA += transfrag[t1]->unaligned_polyA;
+				total_abundance += transfrag[t1]->abundance;
+				total_guide += transfrag[t1]->guide;
+				total_aligned_polyT += transfrag[t1]->aligned_polyT;
+				total_aligned_polyA += transfrag[t1]->aligned_polyA;
+		}
+		
+		bool singleExon=false;
+		//for polyA libraries, single/double exon reads that are not polyagenylated are likely to be artifacts or misalignments
+		if (gno<=4) { //single or double exon.
+			singleExon=true;
+			if (!total_guide && total_unaligned_polyT == 0 && total_unaligned_polyA == 0) return;
+		}
 
 		for(int t1=0;t1<transfrag.Count();t1++) {
 			/*fprintf(stderr,"Consider t=%d with abund=%f lonstart=%d longend=%d guide=%d ",t1,transfrag[t1]->abundance,transfrag[t1]->longstart,transfrag[t1]->longend,transfrag[t1]->guide);
@@ -5793,6 +5828,14 @@ void process_transfrags(int s, int gno,int edgeno,GPVec<CGraphnode>& no2gnode,GP
 				}
 				fprintf(stderr,"%d",transfrag[t1]->nodes[j]);
 			} fprintf(stderr,"\n");*/
+
+			if ((s==0 || singleExon) && (!transfrag[t1]->unaligned_polyT && transfrag[t1]->aligned_polyT)) {
+				transfrag[t1]->is_src_artifact = true;
+			}
+
+			if ((s==1 || singleExon) && (!transfrag[t1]->unaligned_polyA && transfrag[t1]->aligned_polyA)) {
+				transfrag[t1]->is_snk_artifact = true;
+			}
 
 			if(!transfrag[t1]->nodes[0]) {
 				hassource[transfrag[t1]->nodes[1]]=t1;
@@ -5924,9 +5967,19 @@ void process_transfrags(int s, int gno,int edgeno,GPVec<CGraphnode>& no2gnode,GP
 
 								// I keep both if both are guides
 								//if((!transfrag[t[0]]->guide || !transfrag[t[1]]->guide) && abs(len[0])<edgedist && abs(len[2])<edgedist) { // close by
-								if((!transfrag[t[0]]->guide || !transfrag[t[1]]->guide) && len[0]<edgedist && len[2]<edgedist) { // close by
-									if(transfrag[t[0]]->guide || (!transfrag[t[1]]->guide && no2gnode[transfrag[t[0]]->nodes[0]]->hardstart && no2gnode[transfrag[t[0]]->nodes.Last()]->hardend))
-										keeptrf[t2].t=t1; // t[0] to replace t[1]
+								if((!transfrag[t[0]]->guide || !transfrag[t[1]]->guide) && len[0]<edgedist && len[2]<edgedist) {
+
+									bool t2_is_art = (transfrag[t[1]]->is_src_artifact || transfrag[t[1]]->is_snk_artifact);
+									bool t1_is_art =(transfrag[t1]->is_src_artifact || transfrag[t1]->is_snk_artifact);
+									bool replace_ok = (!transfrag[t[1]]->guide && t2_is_art && (transfrag[t[0]]->guide || !t1_is_art));
+								
+									bool term_ok = (transfrag[t[0]]->guide ||                      // original
+										(!transfrag[t[1]]->guide &&
+											no2gnode[transfrag[t[0]]->nodes[0]]->hardstart &&
+											no2gnode[transfrag[t[0]]->nodes.Last()]->hardend) );
+									
+									// close by
+									if (replace_ok && term_ok) keeptrf[t2].t=t1; // t[0] to replace t[1]
 									keeptrf[t2].cov+=transfrag[t1]->abundance;
 									keeptrf[t2].group.Add(t1);
 									included=true;
@@ -5968,11 +6021,17 @@ void process_transfrags(int s, int gno,int edgeno,GPVec<CGraphnode>& no2gnode,GP
 
 		// check if all transfrags in group are artifacts
 		GVec<int> totalTransfrags;
-		GVec<int> artifactTransfrags;
+		GVec<int> totalSnkArtifacts;
+		GVec<int> totalSrcArtifacts;
+		GVec<int> totalUnalignedPolyA;
+		GVec<int> totalUnalignedPolyT;
 		GVec<int> guideTransfrags;
 
 		totalTransfrags.Resize(keeptrf.Count(), 0);
-		artifactTransfrags.Resize(keeptrf.Count(), 0);
+		totalSnkArtifacts.Resize(keeptrf.Count(), 0);
+		totalSrcArtifacts.Resize(keeptrf.Count(), 0);
+		totalUnalignedPolyA.Resize(keeptrf.Count(), 0);
+		totalUnalignedPolyT.Resize(keeptrf.Count(), 0);
 		guideTransfrags.Resize(keeptrf.Count(), 0);
 
 		// Calculate group statistics for each keeptrf entry
@@ -5981,23 +6040,31 @@ void process_transfrags(int s, int gno,int edgeno,GPVec<CGraphnode>& no2gnode,GP
 			
 			// Count artifacts
 			for(int j=0; j<keeptrf[i].group.Count(); j++) {
-				if(transfrag[keeptrf[i].group[j]]->is_artifact) {
-					artifactTransfrags[i]++;
-				}
-				if (transfrag[keeptrf[i].group[j]]->guide) {
-					guideTransfrags[i]++;
-				}
+
+				totalSnkArtifacts[i] += transfrag[keeptrf[i].group[j]]->is_snk_artifact;
+				totalSrcArtifacts[i] += transfrag[keeptrf[i].group[j]]->is_src_artifact;
+				guideTransfrags[i] += transfrag[keeptrf[i].group[j]]->guide;
+				if (s==1 || singleExon) totalUnalignedPolyA[i] += transfrag[keeptrf[i].group[j]]->unaligned_polyA;
+				if (s==0 || singleExon) totalUnalignedPolyT[i] += transfrag[keeptrf[i].group[j]]->unaligned_polyT;
 			}
 		}
 
 		for(int i=keeptrf.Count()-1;i>=0;i--) { // I add the kept transcripts to trflong from least significant to most in order to make deletion easier
 
-			//check if artifactTransfrags[i] == totalTransfrags[i], and guideTransfrags[i] == 0
-			if(artifactTransfrags[i] == totalTransfrags[i] && !guideTransfrags[i]) {
+			if (totalSrcArtifacts[i] == totalTransfrags[i] && !guideTransfrags[i]) {
+				for(int j=0;j<keeptrf[i].group.Count();j++) {
+					transfrag[keeptrf[i].group[j]]->weak = 1; 
+				}
+				continue;
+			}
+			if (totalSnkArtifacts[i] == totalTransfrags[i] && !guideTransfrags[i]) {
+				for(int j=0;j<keeptrf[i].group.Count();j++) {
+					transfrag[keeptrf[i].group[j]]->weak = 1;
+					
+				}
 				continue;
 			}
 
-			//fprintf(stderr,"Build source/sink for transfrag %d\n",keeptrf[i].t);
 			int n1=transfrag[keeptrf[i].t]->nodes[0];
 			int n2=transfrag[keeptrf[i].t]->nodes.Last();
 			//if(hassource[n1]<0 || hassink[n2]<0) fprintf(stderr,"Build source/sink for transfrag %d\n",keeptrf[i].t);
@@ -6086,11 +6153,6 @@ void process_transfrags(int s, int gno,int edgeno,GPVec<CGraphnode>& no2gnode,GP
 			int n1=transfrag[keeptrf[i].t]->nodes[0];
 			int n2=transfrag[keeptrf[i].t]->nodes.Last();
 			
-			//check if artifactTransfrags[i] == totalTransfrags[i], and guideTransfrags[i] == 0
-			if(artifactTransfrags[i] == totalTransfrags[i] && !guideTransfrags[i]) {
-				continue;
-			}
-
 
 			if(transfrag[keeptrf[i].t]->guide || ((no2gnode[n1]->hardstart || (hassource[n1]>=0 && keepsource[n1])) && (no2gnode[n2]->hardend ||(hassink[n2]>=0 && keepsink[n2]))))
 				trflong.Add(keeptrf[i].t);
@@ -6653,7 +6715,7 @@ void process_transfrags(int s, int gno,int edgeno,GPVec<CGraphnode>& no2gnode,GP
 					if(transfrag[t1]->nodes[n]!=1+transfrag[t1]->nodes[n-1] || no2gnode[transfrag[t1]->nodes[n]]->start-1!=no2gnode[transfrag[t1]->nodes[n-1]]->end) {
 						nosplice=false;
 					}
-				}
+				}            
 
 				if(n && n<transfrag[t1]->nodes.Count()-1) {// not first or last node
 					// add t1 to in and out of node
@@ -7988,10 +8050,10 @@ bool fwd_to_sink_fast_long(int i,GVec<int>& path,int& minpath,int& maxpath,GBitV
 				//else GError("Found parent-child: %d-%d not linked by edge!\n",i,inode->child[c]);
 				for(int j=0;j<cnode->trf.Count();j++) { // for all transfrags going through child
 					int t=cnode->trf[j];
-					if (transfrag[t]->is_artifact) {
-						// fprintf(stderr, "1.Found artifact transfrag %d with abundance %f\n", t, transfrag[t]->abundance);
-						continue;
-					}
+					// if (transfrag[t]->is_snk_artifact) {
+					// 	// fprintf(stderr, "1.Found artifact transfrag %d with abundance %f\n", t, transfrag[t]->abundance);
+					// 	continue;
+					// }
 					if(transfrag[t]->abundance<epsilon) { // this transfrag was used before -> needs to be deleted
 						if(!mixedMode) { cnode->trf.Delete(j); j--;}
 						else transfrag[t]->abundance=0;
@@ -8054,10 +8116,10 @@ bool fwd_to_sink_fast_long(int i,GVec<int>& path,int& minpath,int& maxpath,GBitV
 			//else GError("Found parent-child: %d-%d not linked by edge\n",i,i+1);
 			for(int j=0;j<cnode->trf.Count();j++) { // for all transfrags going through child
 				int t=cnode->trf[j];
-				if (transfrag[t]->is_artifact) {
-					// fprintf(stderr, "2. Found artifact transfrag %d with abundance %f\n", t, transfrag[t]->abundance);
-					continue;
-				}
+				// if (transfrag[t]->is_snk_artifact) {
+				// 	// fprintf(stderr, "2. Found artifact transfrag %d with abundance %f\n", t, transfrag[t]->abundance);
+				// 	continue;
+				// }
 				if(transfrag[t]->abundance<epsilon) { // this transfrag was used before -> needs to be deleted
 					if(!mixedMode) { cnode->trf.Delete(j); j--;}
 					else transfrag[t]->abundance=0;
@@ -8216,10 +8278,10 @@ bool back_to_source_fast_long(int i,GVec<int>& path,int& minpath,int& maxpath,GB
 
 				for(int j=0;j<pnode->trf.Count();j++) { // for all transfrags going through parent
 					int t=pnode->trf[j];
-					if (transfrag[t]->is_artifact) {
-						// fprintf(stderr, "3. Found artifact transfrag %d with abundance %f\n", t, transfrag[t]->abundance);
-						continue;
-					}
+					// if (transfrag[t]->is_src_artifact) {
+					// 	// fprintf(stderr, "3. Found artifact transfrag %d with abundance %f\n", t, transfrag[t]->abundance);
+					// 	continue;
+					// }
 					if(transfrag[t]->abundance<epsilon) { // this transfrag was used before -> needs to be deleted
 						if(!mixedMode) { pnode->trf.Delete(j);j--;}
 						else transfrag[t]->abundance=0;
@@ -8283,10 +8345,10 @@ bool back_to_source_fast_long(int i,GVec<int>& path,int& minpath,int& maxpath,GB
 			if(i-1<startpath) startpath=i-1;
 			for(int j=0;j<pnode->trf.Count();j++) { // for all transfrags going through parent
 				int t=pnode->trf[j];
-				if (transfrag[t]->is_artifact) {
-					// fprintf(stderr, "4. Found artifact transfrag %d with abundance %f\n", t, transfrag[t]->abundance);
-					continue;
-				}
+				// if (transfrag[t]->is_src_artifact) {
+				// 	// fprintf(stderr, "4. Found artifact transfrag %d with abundance %f\n", t, transfrag[t]->abundance);
+				// 	continue;
+				// }
 				if(transfrag[t]->abundance<epsilon) { // this transfrag was used before -> needs to be deleted
 					if(!mixedMode) { pnode->trf.Delete(j); j--;}
 					else transfrag[t]->abundance=0;
@@ -10298,7 +10360,7 @@ void parse_trflong(int gno,int geneno,char sign,GVec<CTransfrag> &keeptrf,GVec<i
 			if(!mixedMode || (!guided || transfrag[t]->guide || (no2gnode[transfrag[t]->nodes[0]]->parent[0]==0 &&
 					no2gnode[transfrag[t]->nodes.Last()]->child.Last()==gno-1)) )
 
-				if(transfrag[t]->is_artifact) {
+				if(transfrag[t]->aligned_polyA || transfrag[t]->aligned_polyT  && !transfrag[t]->guide) {
 					continue;
 				}
 				// only accept long transfrags that are linked to source and sink

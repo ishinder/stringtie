@@ -103,28 +103,6 @@ the following options are available:\n\
                    these are not kept unless there is strong evidence for them\n\
   -l <label>       name prefix for output transcripts (default: MSTRG)\n\
 "
-/*
- -C output a file with reference transcripts that are covered by reads\n\
- -U unitigs are treated as reads and not as guides \n\ \\ not used now
- -d disable adaptive read coverage mode (default: yes)\n\
- -n sensitivity level: 0,1, or 2, 3, with 3 the most sensitive level (default 1)\n\ \\ deprecated for now
- -O disable the coverage saturation limit and use a slower two-pass approach\n\
-    to process the input alignments, collapsing redundant reads\n\
-  -i the reference annotation contains partial transcripts\n\
- -w weight the maximum flow algorithm towards the transcript with higher rate (abundance); default: no\n\
- -y include EM algorithm in max flow estimation; default: no\n\
- -z don't include source in the max flow algorithm\n\
- -P output file with all transcripts in reference that are partially covered by reads
- -M fraction of bundle allowed to be covered by multi-hit reads (paper uses default: 1)\n\
- -c minimum bundle reads per bp coverage to consider for assembly (paper uses default: 3)\n\
- -S more sensitive run (default: no) disabled for now \n\
- -s coverage saturation threshold; further read alignments will be\n\ // this coverage saturation parameter is deprecated starting at version 1.0.5
-    ignored in a region where a local coverage depth of <maxcov> \n\
-    is reached (default: 1,000,000);\n\ \\ deprecated
- -e (mergeMode)  include estimated coverage information in the preidcted transcript\n\
- -E (mergeMode)   enable the name of the input transcripts to be included\n\
-                  in the merge output (default: no)\n\
-*/
 //---- globals
 
 FILE* f_out=NULL;
@@ -206,10 +184,10 @@ bool havePtFeatures=false;
 bool mergeMode = false; //--merge option
 bool keepTempFiles = false; //--keeptmp
 bool genNascent = false; // -N/--nasc : internally generate synthetic nascent transcripts
+bool isnascent = false; // used in rlink.cpp, same with genNascent
 bool printNascent = false; // output nascents
 
 bool mixedMode = false; // both short and long read data alignments are provided
-bool isnascent=false;
 
 int GeneNo=0; //-- global "gene" counter
 double Num_Fragments=0; //global fragment counter (aligned pairs)
@@ -338,10 +316,6 @@ int main(int argc, char* argv[]) {
 
  int bamcount=bamreader.start(); //setup and open input files
 
-
- //TODO: TEST ONLY!
- //genNascent=true;
- // ----
 
 #ifndef GFF_DEBUG
  if (bamcount<1) {
@@ -923,12 +897,12 @@ if(!mergeMode) {
 		int nl;
 		int istr;
 		int tlen;
-		float tcov; //do we need to increase precision here ? (double)
-		float calc_fpkm;
-		float calc_tpm;
+                double tcov; // increased precision for downstream calculations
+                double calc_fpkm;
+                double calc_tpm;
 		int t_id;
 		while(fgetline(linebuf,linebuflen,ftmp_in)) {
-			sscanf(linebuf,"%d %d %d %d %g", &istr, &nl, &tlen, &t_id, &tcov);
+                        sscanf(linebuf,"%d %d %d %d %lg", &istr, &nl, &tlen, &t_id, &tcov);
 			if (tcov<0) tcov=0;
 			if (Frag_Len>0.001) calc_fpkm=tcov*1000000000/Frag_Len;
 				else calc_fpkm=0.0;
@@ -1042,12 +1016,12 @@ void processOptions(GArgs& args) {
 
 
 	 // get genNascent option from -N or --nasc
-	 if (args.getOpt('N') || args.getOpt("isnascent")) {
-		 genNascent=true; // this is not needed -> keep it for now but look to replace it with the next one later
+	 if (args.getOpt('N')) {
+		 genNascent=true;
 		 isnascent=true;
 	 }
-	 if (args.getOpt("nasc")) {
-		 genNascent=true; // this is not needed -> keep it for now but look to replace it with the next one later
+	 if (args.getOpt("nasc")) { // --nasc option sets -N but also enable output of nascents
+		 genNascent=true;
 		 isnascent=true;
 		 printNascent=true;
 	 }
@@ -1236,7 +1210,7 @@ void processOptions(GArgs& args) {
 	 s=args.getOpt('s');
 	 if (!s.is_empty()) {
 		 singlethr=(float)s.asDouble();
-		 if (readthr<0.001 && !mergeMode) {
+		 if (singlethr<0.001 && !mergeMode) {
 			 GError("Error: invalid -s value, must be >=0.001)\n");
 		 }
 	 }
@@ -1272,33 +1246,24 @@ void processOptions(GArgs& args) {
 		 eonly=false;
 		 includecov=true;
 	 }
-	 else if(eonly && !guided)
-		 GError("Error: invalid -e usage, GFF reference not given (-G option required).\n");
+	else if(eonly && !guided)
+		GError("Error: invalid -e usage, GFF reference not given (-G option required).\n");
 
 
-	 ballgown_dir=args.getOpt('b');
-	 ballgown=(args.getOpt('B')!=NULL);
-	 if (ballgown && !ballgown_dir.is_empty()) {
-		 GError("Error: please use either -B or -b <path> options, not both.");
-	 }
-	 if ((ballgown || !ballgown_dir.is_empty()) && !guided)
-		 GError("Error: invalid -B/-b usage, GFF reference not given (-G option required).\n");
+	ballgown_dir=args.getOpt('b');
+	ballgown=(args.getOpt('B')!=NULL);
+	if (ballgown && !ballgown_dir.is_empty()) {
+		GError("Error: please use either -B or -b <path> options, not both.");
+	}
+	if ((ballgown || !ballgown_dir.is_empty()) && !guided)
+		GError("Error: invalid -B/-b usage, GFF reference not given (-G option required).\n");
 
-	 /* s=args->getOpt('P');
-	 if (!s.is_empty()) {
-		 if(!guided) GError("Error: option -G with reference annotation file has to be specified.\n");
-		 c_out=fopen(s.chars(), "w");
-		 if (c_out==NULL) GError("Error creating output file %s\n", s.chars());
-		 partialcov=true;
-	 }
-	 else { */
-		 s=args.getOpt('C');
-		 if (!s.is_empty()) {
-			 if(!guided) GError("Error: invalid -C usage, GFF reference not given (-G option required).\n");
-			 c_out=fopen(s.chars(), "w");
-			 if (c_out==NULL) GError("Error creating output file %s\n", s.chars());
-		 }
-	 //}
+	s=args.getOpt('C');
+	if (!s.is_empty()) {
+		if(!guided) GError("Error: invalid -C usage, GFF reference not given (-G option required).\n");
+		c_out=fopen(s.chars(), "w");
+		if (c_out==NULL) GError("Error creating output file %s\n", s.chars());
+	}
 	int numbam=args.startNonOpt();
 #ifndef GFF_DEBUG
 	if (numbam < 1 ) {

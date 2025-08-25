@@ -23,7 +23,14 @@ git clone https://github.com/gpertea/stringtie
 cd stringtie
 make -j4 release
 ```
-During the first run of the above make command a few library dependencies will be downloaded and compiled, but any subsequent stringtie updates (using `git pull`) 
+
+To build with an alternate compiler set the `CC` and `CXX` environment variables, for example:
+```
+CC=clang CXX=clang++ make -j4 release
+CC=icx CXX=icpx make -j4 release
+```
+
+During the first run of the above make command a few library dependencies will be downloaded and compiled, but any subsequent stringtie updates (using `git pull`)
 should rebuild much faster.
 
 To complete the installation, the resulting `stringtie` binary can then be copied to a programs directory of choice (preferably one that is in the current shell's  PATH).
@@ -34,6 +41,17 @@ desktop.
 Note that simply running `make` would produce a less optimized executable which is suitable for debugging 
 and runtime checking but that is significantly slower than the optimized version which 
 is built by using the `make release` command as instructed above.
+
+### Building and testing the offline source package
+
+For HPC environments that do not have online access during the build, please download the latest `.offline.tar.gz` package from <a href="https://github.com/gpertea/stringtie/releases">Releases</a>. Unpack it and cd in the unpacked directory, then:
+
+```
+make -j6 release
+make test
+```
+This should build the `stringtie` binary and run the included tests, without having to fetch dependencies and test data.  
+
 
 ### Using pre-compiled (binary) releases
 Instead of compiling from source, some users may prefer to download an already compiled binary for Linux 
@@ -66,6 +84,18 @@ Note that the command line parser in StringTie allows arbitrary order and mixing
 ```
 stringtie <short_read_alns.bam> <long_read_alns.bam> --mix [other_options] [-o <output.gtf>] 
 ```
+
+### Nascent-aware assembly (new in StringTie3)
+
+Many rRNA-depleted (“Total RNA”) libraries capture a mixture of mature and nascent (incomplete) RNA. StringTie 3 introduces a **nascent-aware** algorithm that accounts for this signal and separates mature from nascent RNA in the assembly process.
+
+| Flag | Behaviour |
+| :--- | :--- |
+| `-N` | Enables nascent-aware assembly (recommended for any rRNA-depleted or Total RNA library). The primary output GTF contains **only mature** transcript models. |
+| `--nasc` | Same algorithm as `-N`, but also retains nascent intermediates in the GTF output. Nascent records carry `nascentRNA` in the **source** column (field 2) and include a `nascent_parent "<mature_ID>"` attribute that links each nascent transcript to its mature parent. |
+
+Full algorithmic details are described in our pre-print:  
+Shinder I, Pertea G, Hu R, Rudnick Z, Pertea M. [*StringTie 3 improves total-RNA assembly by resolving nascent and mature transcripts.*](https://www.biorxiv.org/content/10.1101/2025.05.21.655404v1) *bioRxiv* (2025). doi:10.1101/2025.05.21.655404
 
 ### Running StringTie on the provided test data
 
@@ -270,4 +300,4 @@ Kovaka S, Zimin AV, Pertea GM, Razaghi R, Salzberg SL, Pertea M  [**Transcriptom
 
 Pertea M, Kim D, Pertea GM, Leek JT, Salzberg SL [**Transcript-level expression analysis of RNA-seq experiments with HISAT, StringTie and Ballgown**](http://www.nature.com/nprot/journal/v11/n9/full/nprot.2016.095.html), _Nature Protocols_ 11, 1650-1667 (2016), doi:10.1038/nprot.2016.095
 
-Pertea M, Pertea GM, Antonescu CM, Chang TC, Mendell JT  & Salzberg SL [**StringTie enables improved reconstruction of a transcriptome from RNA-seq reads**](http://www.nature.com/nbt/journal/vaop/ncurrent/full/nbt.3122.html), _Nature Biotechnology_ 2015, doi:10.1038/nbt.3122
+Pertea M, Pertea GM, Antonescu CM, Chang TC, Mendell JT  & Salzberg SL [**StringTie enables improved reconstruction of a transcriptome from RNA-seq reads**](http://www.nature.com/nbt/journal/vaop/ncurrent/full/nbt.3122.html), _Nature Biotechnology_ (2015), doi:10.1038/nbt.3122

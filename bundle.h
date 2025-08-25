@@ -277,11 +277,12 @@ struct CPrediction:public GSeg {
 	GVec<GSeg> exons;
 	GVec<float> exoncov;
 	GStr mergename;
+	bool artifact:1; // set if this is an artifact
 	CPrediction(int _geneno=0, GffObj* guide=NULL, int gstart=0, int gend=0, float _cov=0, char _strand='.',
 	int _len=0,bool f=true, CPrediction* lp=NULL):GSeg(gstart,gend), geneno(_geneno),t_eq(guide),cov(_cov),longcov(0),strand(_strand),
 	//CPrediction(int _geneno=0, char* _id=NULL,int gstart=0, int gend=0, float _cov=0, char _strand='.', float _frag=0,
 	//		int _len=0,bool f=true):GSeg(gstart,gend), geneno(_geneno),id(_id),cov(_cov),strand(_strand),frag(_frag),
-			tlen(_len),flag(f),linkpred(lp),exons(),exoncov(),mergename() {}
+			tlen(_len),flag(f),linkpred(lp),exons(),exoncov(),mergename(), artifact(false) {}
 	void init(int _geneno=0, GffObj* guide=NULL, int gstart=0, int gend=0, float _cov=0, char _strand='.',
 	          int _len=0,bool f=true, CPrediction* lp=NULL) {
 		geneno=_geneno;
@@ -296,12 +297,13 @@ struct CPrediction:public GSeg {
 		exons.Clear();
 		exoncov.Clear();
 		mergename.clear();
+		artifact=false;
 	}
 
 	CPrediction(CPrediction& c):GSeg(c.start, c.end), geneno(c.geneno),
 //			id(Gstrdup(c.id)), cov(c.cov), strand(c.strand), frag(c.frag), tlen(c.tlen), flag(c.flag),
 			t_eq(c.t_eq), cov(c.cov), longcov(c.longcov),strand(c.strand), tlen(c.tlen), flag(c.flag),linkpred(c.linkpred),
-	      exons(c.exons),  exoncov(c.exoncov), mergename(c.mergename) {}
+	      exons(c.exons),  exoncov(c.exoncov), mergename(c.mergename), artifact(c.artifact) {}
 	~CPrediction() { //GFREE(id);
 		}
 };

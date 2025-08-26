@@ -552,21 +552,49 @@ void processRead(int currentstart, int currentend, BundleData& bdata,
 		}
 	}
 
-	//check the last exon of the read to determine its % of poly rA/rU
-	//if it is above 80%, likely this is a polyA tail aligned as an exon
+	// Trim terminal polyA/T artifact exons BEFORE building junctions/coverage
 	if (longr && brec.exons.Count() >= 2 && !ovlpguide) {
-		float polyA_percentage = check_last_exon_polyA(brec);
-		if (polyA_percentage >= 0.8) {
-			//remove the last exon of the read
-			brec.exons.Delete(brec.exons.Count() - 1);
-			brec.end = brec.exons.Last().end;
+		const int exN0 = brec.exons.Count();
+
+		// Strand-aware test: only check the relevant terminal
+		bool rmLast  = false;  // right end / last exon
+		bool rmFirst = false;  // left end / first exon
+		rmLast  = (check_last_exon_polyA(brec)  >= 0.8f);
+		rmFirst = (check_first_exon_polyT(brec) >= 0.8f);
+
+		if (rmLast && rmFirst)  {
+			if (exN0 == 2) return;
+			if (strand == 1) rmFirst = false;
+			else if (strand == -1) rmLast = false;
+			
 		}
-		float polyT_percentage = check_first_exon_polyT(brec);
-		if (polyT_percentage >= 0.8) {
-			//remove the first exon of the read
+
+		// ---- Delete LAST (use original exN0 index) ----
+		if (rmLast) {
+			if (brec.juncsdel.Count() > 0) {
+				brec.juncsdel.Delete(brec.juncsdel.Count() - 1);
+				if (alndata.juncs.Count() > 0)
+					alndata.juncs.Delete(alndata.juncs.Count() - 1);
+			}
+			brec.exons.Delete(exN0 - 1);
+		}
+
+		// ---- Delete FIRST ----
+		if (rmFirst) {
+			if (brec.juncsdel.Count() > 0) {
+				brec.juncsdel.Delete(0);
+				if (alndata.juncs.Count() > 0)
+					alndata.juncs.Delete(0);
+			}
 			brec.exons.Delete(0);
-			brec.start = brec.exons.First().start;
 		}
+
+		if (brec.exons.Count() == 0) return;
+
+		// Recompute BOTH ends and refresh readstart (used later in pairing)
+		brec.start = brec.exons.First().start;
+		brec.end   = brec.exons.Last().end;
+		readstart  = brec.start;
 	}
 
 
@@ -14227,6 +14255,7 @@ int build_graphs(BundleData* bdata) {
 
 	bool resort=false;
 	int njunc=junction.Count();
+	readlist.Sort();
 	for (int n=0;n<readlist.Count();n++) {
 		CReadAln & rd=*(readlist[n]);
 

@@ -553,12 +553,11 @@ void processRead(int currentstart, int currentend, BundleData& bdata,
 	}
 
 	// Trim terminal polyA/T artifact exons BEFORE building junctions/coverage
+	bool rmLast  = false;  // right end / last exon
+	bool rmFirst = false;  // left end / first exon
 	if (longr && brec.exons.Count() >= 2 && !ovlpguide) {
 		const int exN0 = brec.exons.Count();
 
-		// Strand-aware test: only check the relevant terminal
-		bool rmLast  = false;  // right end / last exon
-		bool rmFirst = false;  // left end / first exon
 		rmLast  = (check_last_exon_polyA(brec)  >= 0.8f);
 		rmFirst = (check_first_exon_polyT(brec) >= 0.8f);
 
@@ -569,7 +568,6 @@ void processRead(int currentstart, int currentend, BundleData& bdata,
 			
 		}
 
-		// ---- Delete LAST (use original exN0 index) ----
 		if (rmLast) {
 			if (brec.juncsdel.Count() > 0) {
 				brec.juncsdel.Delete(brec.juncsdel.Count() - 1);
@@ -577,9 +575,9 @@ void processRead(int currentstart, int currentend, BundleData& bdata,
 					alndata.juncs.Delete(alndata.juncs.Count() - 1);
 			}
 			brec.exons.Delete(exN0 - 1);
+			
 		}
 
-		// ---- Delete FIRST ----
 		if (rmFirst) {
 			if (brec.juncsdel.Count() > 0) {
 				brec.juncsdel.Delete(0);
@@ -636,6 +634,24 @@ void processRead(int currentstart, int currentend, BundleData& bdata,
 			if(len<mintranscriptlen) return;
 		}
 		readaln=new CReadAln(strand, nh, brec.start, brec.end, alndata.tinfo);
+
+		if(longr) {
+			readaln->aligned_polyT = check_aligned_polyT_start(brec);
+			readaln->aligned_polyA = check_aligned_polyA_end(brec);
+			readaln->unaligned_polyT = check_unaligned_polyT_start(brec);
+			readaln->unaligned_polyA = check_unaligned_polyA_end(brec);
+
+			if (rmFirst) {
+				readaln->aligned_polyT = false;
+				readaln->unaligned_polyT = true;
+			}
+
+			if (rmLast) {
+				readaln->aligned_polyA = false;
+				readaln->unaligned_polyA = true;
+			}
+		}
+
 		readaln->longread=longr;
 		alndata.tinfo=NULL; //alndata.tinfo was passed to CReadAln
 		for (int i=0;i<brec.exons.Count();i++) {
@@ -13653,6 +13669,46 @@ void continue_read(GList<CReadAln>& readlist,int n,int idx) {
 	}
 }
 
+// Helper function to shorten first exon to a single base and update read properties
+void shortenFirstExon(CReadAln &rd) {
+	int dist = 1;
+    int nEx = rd.segs.Count();
+    if(nEx < 2) return;
+    
+    // uint old_start = rd.segs[0].start;
+    rd.segs[0].start = rd.segs[0].end - dist;
+    rd.start = rd.segs[0].start;
+    
+    // Recalculate read length
+    rd.len = 0;
+    for(int i = 0; i < nEx; i++) {
+        rd.len += rd.segs[i].end - rd.segs[i].start + 1;
+    }
+    
+    // GMessage("Shortened first exon at position %d to a single basepair and changed start position to %d\n", 
+    //          old_start, rd.start);
+}
+
+// Helper function to shorten last exon to a single base and update read properties
+void shortenLastExon(CReadAln &rd) {
+	int dist = 1;
+    int nEx = rd.segs.Count();
+    if(nEx < 2) return;
+    
+    // uint old_end = rd.segs[nEx-1].end;
+    rd.segs[nEx-1].end = rd.segs[nEx-1].start + dist;
+    rd.end = rd.segs[nEx-1].end;
+    
+    // Recalculate read length
+    rd.len = 0;
+    for(int i = 0; i < nEx; i++) {
+        rd.len += rd.segs[i].end - rd.segs[i].start + 1;
+    }
+    
+    // GMessage("Shortened last exon at position %d to a single basepair and changed end position to %d\n", 
+    //          old_end, rd.end);
+}
+
 int build_graphs(BundleData* bdata) {
 	int refstart = bdata->start;
 	GList<CReadAln>& readlist = bdata->readlist;
@@ -14255,7 +14311,7 @@ int build_graphs(BundleData* bdata) {
 
 	bool resort=false;
 	int njunc=junction.Count();
-	readlist.Sort();
+
 	for (int n=0;n<readlist.Count();n++) {
 		CReadAln & rd=*(readlist[n]);
 
@@ -14512,7 +14568,6 @@ int build_graphs(BundleData* bdata) {
 			for(i=0;i<rd.juncs.Count();i++) { fprintf(stderr," %d-%d:%d",rd.segs[i].start,rd.segs[i].end,rd.juncs[i]->strand);}
 			fprintf(stderr," %d-%d\n",rd.segs[i].start,rd.segs[i].end);*/
 
-			color=add_read_to_group(n,readlist,color,group,currgroup,startgroup,readgroup,equalcolor,merge);
 
 			// count fragments
 			if(!rd.unitig)
@@ -14529,11 +14584,43 @@ int build_graphs(BundleData* bdata) {
 												    // a super-read -> I might want to re-estimate this from coverage and have some input for read length; or I might only use TPM
 			}
 
+			if (rd.longread) {
+				//TODO: can also remove RT drop-off at poly(rA/rU)
+				// unknown strand:
+				
+				int start = (int)rd.start;
+				int end = (int)rd.end;
+
+				if (rd.strand == 0) {
+					if (rd.aligned_polyA && !rd.unaligned_polyA) shortenLastExon(rd);
+					if (rd.aligned_polyT && !rd.unaligned_polyT) shortenFirstExon(rd);
+				}
+					
+				// Forward strand
+				if (rd.strand == 1) {
+					if (rd.aligned_polyA && !rd.unaligned_polyA) shortenLastExon(rd);
+				}
+
+				// Reverse strand
+				else if (rd.strand == -1) {
+					if (rd.aligned_polyT && !rd.unaligned_polyT) shortenFirstExon(rd);
+				}
+			}
+
 			//fprintf(stderr,"now color=%d\n",color);
 		//}
 		//else { fprintf(stderr,"read[%d] is not kept\n",n);}
 		//else clean_read_junctions(readlist[n]);
 	}
+
+	if(longreads) {
+		readlist.Sort();
+	}
+
+	for (int n = 0; n < readlist.Count(); n++) {
+			color=add_read_to_group(n,readlist,color,group,currgroup,startgroup,readgroup,equalcolor,merge);
+	}
+	
 
 	if(resort) {
 		junction.setSorted(true);

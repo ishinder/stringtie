@@ -183,10 +183,15 @@ struct CReadAln:public GSeg {
 		bool in_guide;
 	};
 
+	bool aligned_polyT:1;
+	bool aligned_polyA:1;
+	bool unaligned_polyT:1;
+	bool unaligned_polyA:1;
+
 	CReadAln(char _strand=0, short int _nh=0,
 			int rstart=0, int rend=0, TAlnInfo* tif=NULL): GSeg(rstart, rend), //name(rname),
 					strand(_strand),nh(_nh), len(0), read_count(0), unitig(false),longread(false),pair_count(),pair_idx(),
-					segs(), juncs(false), tinfo(tif) { }
+					segs(), juncs(false), tinfo(tif), aligned_polyT(false), aligned_polyA(false), unaligned_polyT(false), unaligned_polyA(false) { }
 	CReadAln(CReadAln &rd):GSeg(rd.start,rd.end) { // copy contructor
 		strand=rd.strand;
 		nh=rd.nh;

@@ -13671,12 +13671,11 @@ void continue_read(GList<CReadAln>& readlist,int n,int idx) {
 
 // Helper function to shorten first exon to a single base and update read properties
 void shortenFirstExon(CReadAln &rd) {
-	int dist = 1;
-    int nEx = rd.segs.Count();
+	    int nEx = rd.segs.Count();
     if(nEx < 2) return;
     
     // uint old_start = rd.segs[0].start;
-    rd.segs[0].start = rd.segs[0].end - dist;
+    rd.segs[0].start = rd.segs[0].end;
     rd.start = rd.segs[0].start;
     
     // Recalculate read length
@@ -13691,12 +13690,11 @@ void shortenFirstExon(CReadAln &rd) {
 
 // Helper function to shorten last exon to a single base and update read properties
 void shortenLastExon(CReadAln &rd) {
-	int dist = 1;
-    int nEx = rd.segs.Count();
+	    int nEx = rd.segs.Count();
     if(nEx < 2) return;
     
     // uint old_end = rd.segs[nEx-1].end;
-    rd.segs[nEx-1].end = rd.segs[nEx-1].start + dist;
+    rd.segs[nEx-1].end = rd.segs[nEx-1].start;
     rd.end = rd.segs[nEx-1].end;
     
     // Recalculate read length

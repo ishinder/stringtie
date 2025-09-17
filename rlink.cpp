@@ -9997,7 +9997,7 @@ void parse_trflong(int gno,int geneno,char sign,GVec<CTransfrag> &keeptrf,GVec<i
 			if(!nasc && (!transfrag[t]->guide || isNascent(guides[int(transfrag[t]->guide-1)]))) continue; // skip non-guides and nascents in non nasc step
 		}
 
-                double longcov=transfrag[t]->abundance;
+        double longcov=transfrag[t]->abundance;
 
 		//if(transfrag[t]->guide) fprintf(stderr,"nasc=%d evaluate guide:%s\n",nasc,guides[int(transfrag[t]->guide-1)]->getID());
 
@@ -10044,6 +10044,96 @@ void parse_trflong(int gno,int geneno,char sign,GVec<CTransfrag> &keeptrf,GVec<i
 			path.Reverse(); // back to source adds the nodes at the end to avoid pushing the list all the time
 
 			if(fwd_to_sink_fast_long(maxi,path,minp,maxp,pathpat,transfrag,no2gnode,nodecov,gno,gpos)) {
+				bool thardstart = no2gnode[transfrag[t]->nodes[0]]->hardstart;
+				bool thardend = no2gnode[transfrag[t]->nodes.Last()]->hardend;
+				int startnode=1;
+				int lastnode=path.Count()-2;
+
+				bool checkpath = true;
+				if (thardstart && thardend) {
+					// does the first node of the path == first node of transfrag t?
+					if (startnode != transfrag[t]->nodes[0] && lastnode != transfrag[t]->nodes.Last()) {
+						if(transfrag[t]->abundance>CHI_WIN) {
+							checkpath = false;
+							// we should update the maxi,path,minp,maxp,pathpat,gps	parameters to transfrag[t]
+							path.Clear();
+							pathpat.reset();
+							// source node
+							path.cAdd(0);
+							pathpat[0]=1;
+							int prev_node=0;
+							for (int ni=0; ni<transfrag[t]->nodes.Count(); ++ni) {
+								int u=transfrag[t]->nodes[ni];
+								path.Add(u);
+								pathpat[u]=1;
+								int* epos=gpos[edge(prev_node,u,gno)];
+								if (epos) pathpat[*epos]=1;
+								prev_node=u;
+							}
+							if (prev_node!=gno-1) {
+								int* epos=gpos[edge(prev_node,gno-1,gno)];
+								if (epos) pathpat[*epos]=1;
+								path.cAdd(gno-1);
+								pathpat[gno-1]=1;
+							}
+							// preserve transcript's allowed pattern
+							pathpat = pathpat | transfrag[t]->pattern;
+							// refresh bounds and indices for downstream logic
+							if (path.Count()>=2) {
+								minp = path[1];
+								maxp = path[path.Count()-2];
+								maxi = minp;
+								startnode = 1;
+								lastnode  = path.Count()-2;
+							}
+						}
+
+						else {
+							checktrf.Add(t); // mark this transcript to be checked later with more permissive parameters
+							continue;
+						}
+					}
+				}
+
+				// check if the splices in the path have LR support
+				if (checkpath && lastnode >= startnode) {
+					GVec<int> splicePos;
+
+					for (int p = startnode; p <= lastnode; ++p) {
+						if (p==1) continue; // no edge before first node
+						int u = path[p-1];
+						int v = path[p];
+						if (is_splice_between(no2gnode[u], no2gnode[v])) {
+							splicePos.Add(p);
+						}
+					}
+
+					// Require an LR witness across every pair of *consecutive* splice edges,
+					// ignoring any number of contiguous nodes between them.
+					bool unwitnessed = false;
+					for (int k = 1; k < splicePos.Count(); ++k) {
+						int pA = splicePos[k-1];      // right node index of first splice edge
+						int pB = splicePos[k];        // right node index of next splice edge
+
+						int la = path[pA-1];          // first splice: (la -> ra)
+						int ra = path[pA];
+						int lb = path[pB-1];          // second splice: (lb -> rb)
+						int rb = path[pB];
+
+						if (!has_lr_witness_two_splices(la, ra, lb, rb, transfrag)) {
+							unwitnessed = true;
+							//if the startnode and endnode of the transfrag are hardstart and hardend, then add to checktrf:
+							if (no2gnode[transfrag[t]->nodes[0]]->hardstart && no2gnode[transfrag[t]->nodes.Last()]->hardend) {
+								checktrf.Add(t); // mark this transcript to be checked later with more permissive parameters
+							}
+							break;
+						}
+					}
+
+					if (unwitnessed) {
+						continue;                 // skip building exons for this candidate
+					}
+				}
 
 				flux=long_max_flow(gno,path,istranscript,transfrag,no2gnode,nodeflux,pathpat,t); // I should not use other guide transfrags beyond the actual guide one!!
 
@@ -10073,8 +10163,7 @@ void parse_trflong(int gno,int geneno,char sign,GVec<CTransfrag> &keeptrf,GVec<i
 					int j=1;
 					int len=0;
                     double cov=0;
-					int startnode=1;
-					int lastnode=path.Count()-2;
+
 
 					uint startpoint=no2gnode[path[startnode]]->start;
 					uint endpoint=no2gnode[path[lastnode]]->end;
@@ -10107,40 +10196,7 @@ void parse_trflong(int gno,int geneno,char sign,GVec<CTransfrag> &keeptrf,GVec<i
 						if(endpoint==no2gnode[path[lastnode]]->start) endpoint=no2gnode[path[lastnode]]->end;
 					}
 
-					if (lastnode >= startnode) {
-						GVec<int> splicePos;
 
-						for (int p = startnode; p <= lastnode; ++p) {
-							if (p==1) continue; // no edge before first node
-							int u = path[p-1];
-							int v = path[p];
-							if (is_splice_between(no2gnode[u], no2gnode[v])) {
-								splicePos.Add(p);
-							}
-						}
-
-						// Require an LR witness across every pair of *consecutive* splice edges,
-						// ignoring any number of contiguous nodes between them.
-						bool unwitnessed = false;
-						for (int k = 1; k < splicePos.Count(); ++k) {
-							int pA = splicePos[k-1];      // right node index of first splice edge
-							int pB = splicePos[k];        // right node index of next splice edge
-
-							int la = path[pA-1];          // first splice: (la -> ra)
-							int ra = path[pA];
-							int lb = path[pB-1];          // second splice: (lb -> rb)
-							int rb = path[pB];
-
-							if (!has_lr_witness_two_splices(la, ra, lb, rb, transfrag)) {
-								unwitnessed = true;
-								break;
-							}
-						}
-
-						if (unwitnessed) {
-							continue;                 // skip building exons for this candidate
-						}
-					}
 
 					while(j<=lastnode) {
 						int nodestart=no2gnode[path[j]]->start;

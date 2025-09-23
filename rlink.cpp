@@ -57,6 +57,23 @@ extern bool havePtFeatures; // if there is feature data to use
 static GStr _id("", 256); //to prevent repeated reallocation for each parsed read
 //not thread safe -- to only be used in processRead() as long as that's the unique producer
 
+// Stable coordinate comparator helper: preserve pre-sort order on ties.
+// We only compare start, then end; if equal, we fall back to the original
+// position recorded right before sorting.
+static int coordStableCmp(const pointer p1, const pointer p2) {
+    const CReadAln* a = (const CReadAln*)p1;
+    const CReadAln* b = (const CReadAln*)p2;
+    if (a->start < b->start) return -1;
+    if (a->start > b->start) return 1;
+    if (a->end   < b->end)   return -1;
+    if (a->end   > b->end)   return 1;
+    // true stability: preserve pre-sort order for ties
+    if (a->sort_tiebreaker < b->sort_tiebreaker) return -1;
+    if (a->sort_tiebreaker > b->sort_tiebreaker) return 1;
+    return 0;
+}
+
+
 CJunction* add_junction(int start, int end, GList<CJunction>& junction, char strand) {
 
 	int oidx=-1;
@@ -325,23 +342,15 @@ bool mismatch_anchor(CReadAln *rd,char *mdstr,int refstart, bam1_t *b) {
 	return false;
 }
 
-static const int    POLY_TAIL_WIN         = 25;    // window for aligned/unaligned end scan
-static const int    POLY_TAIL_MIN_COUNT   = 8;     // min total A/Ts in window/clip
-static const double POLY_TAIL_MIN_FRAC    = 0.80;  // min fraction A/Ts in window/clip
+static const int    POLY_TAIL_WIN         = 20;    // window for aligned/unaligned end scan
+static const int    POLY_TAIL_MIN_COUNT   = 5;     // min total A/Ts in window/clip
+static const double POLY_TAIL_MIN_FRAC    = 0.8;  // min fraction A/Ts in window/clip
 static const int    POLY_TAIL_MIN_CONSEC  = 5;     // min consecutive A/Ts (handles short clips)
-static const uint16_t POLY_TAIL_STOP_COUNT = 5;   // min unaligned-tail reads to mark hardstart/hardend
-static const int CPAS_POS_BIN = 25;      // merge calls within 25 bp
-static const int CPAS_MIN_SUPPORT = 3;   // require >= 3 reads in a cluster
+static const uint16_t POLY_TAIL_STOP_COUNT = 8;   // min unaligned-tail reads to mark hardstart/hardend
+static const int CPAS_POS_BIN = 5;      // merge calls within 25 bp
+static const int CPAS_MIN_SUPPORT = 20;   // require >= 3 reads in a cluster
 
-//TODO - mixed mode implementation for LR traversal (important with rRNA-depleted short reads and polyA+ long reads)
-// static const double SHORT_BRIDGE_FACTOR   = 0.20;  // mixed-mode fallback when no LR traverses node
-
-// Demote iff cur/better ratio is at or below a tiered threshold based on `cur`'s support.
-// Tiers (by current junction support, `na`):
-//   < 100      -> thr = 0.50
-//   100..200   -> thr = 0.25
-//   > 200      -> thr = 0.10
-
+// Demote if cur/better ratio is at or below a tiered threshold based on `cur`'s support.
 static inline double junc_ratio_threshold(double na) {
 	if (na <= 25.0)       return 1.0; // under 25
     else if (na <= 100.0) return 0.50; // 25-100
@@ -362,24 +371,59 @@ static inline bool ok_to_demote(const CJunction* cur,
 
 
 // ==== CPAS clustering helper ===============================================
-// Cluster positions and keep both centers and counts
-
+// Cluster nearby genomic positions into peaks and report center and total support.
+// - Input rawIn may contain repeated positions to encode weights (support per read).
+// - This function aggregates duplicates and sums support within each cluster.
+// - Clustering uses single-linkage with the last position in the current cluster (b):
+//      if (pos - b <= CPAS_POS_BIN) extend cluster; else, close cluster and start new.
 static inline void cluster_positions_with_counts(const GVec<int>& rawIn,
                                                  GVec<int>& centers,
                                                  GVec<int>& counts) {
-	GVec<int> raw(rawIn);
+    GVec<int> raw(rawIn);
     if (!raw.Count()) return;
     raw.Sort();
 
-    int a = raw[0], b = raw[0], n = 1;
-    for (int i = 1; i < raw.Count(); ++i) {
-        if (raw[i] - b <= CPAS_POS_BIN) { b = raw[i]; ++n; }
-        else {
-            if (n >= CPAS_MIN_SUPPORT) { centers.cAdd((a+b)/2); counts.cAdd(n); }
-            a = b = raw[i]; n = 1;
+    // Initialize first unique position with its multiplicity (weight)
+    int i = 0;
+    int pos = raw[0];
+    int w = 1;
+    while (i + 1 < raw.Count() && raw[i + 1] == pos) { ++w; ++i; }
+
+    int a = pos;            // cluster start position (leftmost)
+    int b = pos;            // cluster last position (rightmost)
+    long long sumw  = w;    // total support in cluster
+    long long sumwx = (long long)w * pos; // weighted position sum
+
+    for (++i; i < raw.Count(); ++i) {
+        // coalesce identical positions to get their weight
+        pos = raw[i];
+        w = 1;
+        while (i + 1 < raw.Count() && raw[i + 1] == pos) { ++w; ++i; }
+
+        if (pos - b <= CPAS_POS_BIN) {
+            // extend current cluster
+            b = pos;
+            sumw  += w;
+            sumwx += (long long)w * pos;
+        } else {
+            // close current cluster
+            if (sumw >= CPAS_MIN_SUPPORT) {
+                int center = (int)((sumwx + (sumw >> 1)) / sumw); // round to nearest
+                centers.cAdd(center);
+                counts.cAdd((int)sumw);
+            }
+            // start new cluster
+            a = b = pos;
+            sumw  = w;
+            sumwx = (long long)w * pos;
         }
     }
-    if (n >= CPAS_MIN_SUPPORT) { centers.cAdd((a+b)/2); counts.cAdd(n); }
+    // flush last cluster
+    if (sumw >= CPAS_MIN_SUPPORT) {
+        int center = (int)((sumwx + (sumw >> 1)) / sumw);
+        centers.cAdd(center);
+        counts.cAdd((int)sumw);
+    }
 }
 
 // Add a CPAS trimpoint once, merging with an existing one if close
@@ -401,21 +445,21 @@ static inline void add_cpas_trimpoint(int pos, int refstart, int refend,
     tstartend.cAdd(CTrimPoint(pos, (float)support, is_start));
 }
 
-// ==== LR "adjacent junction pair" witness helpers =========================
+/// ==== LR "adjacent junction pair" witness helpers =========================
 
 // A splice exists if two nodes are not immediately contiguous on the genome.
 static inline bool is_splice_between(const CGraphnode* a, const CGraphnode* b) {
     return (a->end + 1 < b->start);
 }
 
-// Does a transfrag have the adjacent node-pair edge (u -> v)?
-static inline bool tf_contains_edge(const CTransfrag* tf, int u, int v) {
-    GVec<int> ns = tf->nodes;
-    for (int i = 1; i < ns.Count(); ++i) {
-        if (ns[i-1] == u && ns[i] == v) return true;
-    }
-    return false;
-}
+// // Does a transfrag have the adjacent node-pair edge (u -> v)?
+// static inline bool tf_contains_edge(const CTransfrag* tf, int u, int v) {
+//     GVec<int> ns = tf->nodes;
+//     for (int i = 1; i < ns.Count(); ++i) {
+//         if (ns[i-1] == u && ns[i] == v) return true;
+//     }
+//     return false;
+// }
 
 // Does a transfrag have edge (la->ra), and later (lb->rb), in that order?
 static inline bool tf_contains_two_edges_in_order(const CTransfrag* tf,
@@ -433,15 +477,30 @@ static inline bool tf_contains_two_edges_in_order(const CTransfrag* tf,
     return false;
 }
 
+//TODO - mixed mode implementation for LR traversal (important with rRNA-depleted short reads and polyA+ long reads)
+//^the above lowered precision (improved sensitivity *very* slightly by a dozen or so reads)
+
 // Is there any LR transfrag that witnesses BOTH splice edges (in order)?
 static inline bool has_lr_witness_two_splices(int la, int ra, int lb, int rb,
-                                              GPVec<CTransfrag>& transfrag) {
+                                              GPVec<CTransfrag>& transfrag,
+                                              GPVec<CGraphnode>& no2gnode) {
+    // Prefer a true long-read witness spanning both splice edges in order
     for (int t = 0; t < transfrag.Count(); ++t) {
         CTransfrag* tf = transfrag[t];
-        if (!tf->longread) continue;
+        // if (!tf->longread) continue;
         if (tf_contains_two_edges_in_order(tf, la, ra, lb, rb))
             return true;
     }
+
+    // // Mixed mode relaxation: if the exon between the two splice edges is long enough,
+    // // allow short-read bridging without requiring a single transfrag to span both.
+    // if (mixedMode) {
+    //     // Exon between splices spans from start(ra) to end(lb) along the path
+    //     int exon_span = (int)no2gnode[lb]->end - (int)no2gnode[ra]->start + 1;
+    //     // If the end of the first junction and the beginning of the next junction
+    //     // are more than 50bp apart, AND each junction has really good support, LR should not be required
+    //     if (exon_span > 50) return true;
+    // }
     return false;
 }
 
@@ -735,6 +794,14 @@ void processRead(int currentstart, int currentend, BundleData& bdata,
                 readaln->aligned_polyA = 0;
                 if (readaln->unaligned_polyA == 0) readaln->unaligned_polyA = 1;
             }
+
+			if (strand == 0 && longr) { // if strand is unknown, try to infer it from polyA/T evidence
+				bool plus_strand = readaln->unaligned_polyA>0 || readaln->aligned_polyA>0;
+				bool minus_strand = readaln->unaligned_polyT>0 || readaln->aligned_polyT>0;
+				if( plus_strand && !minus_strand) readaln->strand=1;
+				else if( minus_strand && !plus_strand) readaln->strand=-1;
+			}
+			// if both plus and minus evidence, then strand remains unknown (0)			
         }
 
 		readaln->longread=longr;
@@ -4882,7 +4949,7 @@ void get_fragment_pattern(GList<CReadAln>& readlist,int n, int np,float readcov,
 		GVec<int> *pnode=NULL;
 		// get pair pattern if pair exists and it hasn't been deleted
 		if(np>-1 && readlist[np]->nh) {
-			pnode=new GVec<int>[readgroup[n].Count()];
+			pnode=new GVec<int>[readgroup[np].Count()];
 			get_read_pattern(s,readcov,pgno,rprop[s],pnode,readlist,np,readgroup,merge,group2bundle,bundle2graph,no2gnode);
 		}
 
@@ -5091,7 +5158,10 @@ void get_read_to_transfrag(GList<CReadAln>& readlist,int n,GVec<int> *readgroup,
 	for(int s=0;s<2;s++)
 		if(rgno[s]>-1) { // read is valid (has pattern) on strand s
 			// update transfrag
-            CTransfrag *t=update_abundance(s,rgno[s],graphno[s][rgno[s]],gpos[s][rgno[s]],rpat[s],rprop[s]*readlist[n]->read_count,rnode[s],transfrag,tr2no,no2gnode[s][rgno[s]],readlist[n]->start,readlist[n]->end,false,false,readlist[n]->aligned_polyT,readlist[n]->aligned_polyA,readlist[n]->unaligned_polyT,readlist[n]->unaligned_polyA);
+            CTransfrag *t=update_abundance(s,rgno[s],graphno[s][rgno[s]],gpos[s][rgno[s]],rpat[s],rprop[s]*readlist[n]->read_count,rnode[s],transfrag,tr2no,no2gnode[s][rgno[s]],readlist[n]->start,readlist[n]->end,
+							false,false
+							,readlist[n]->aligned_polyT,readlist[n]->aligned_polyA,
+							readlist[n]->unaligned_polyT,readlist[n]->unaligned_polyA);
 
 			// if I want to inset source/sink maybe here would be the place
 
@@ -5932,17 +6002,17 @@ void process_transfrags(int s, int gno,int edgeno,GPVec<CGraphnode>& no2gnode,GP
 					if(transfrag[t1]->longstart) {
 						keepsource[transfrag[t1]->nodes[0]]=1; //fprintf(stderr,"keep source %d\n",transfrag[t1]->nodes[0]);}
 						//TODO - more subtle approach for abundannce needed (based on transfrag expression in bundle)
-						if(transfrag[t1]->abundance>CHI_WIN) no2gnode[transfrag[t1]->nodes[0]]->hardstart=1;  // MOD EDGE CASE trust a very abundant transcript v1 v3				if(transfrag[t1]->abundance>CHI_WIN) no2gnode[transfrag[t1]->nodes[0]]->hardstart=1; 
-						else if(s==0 && transfrag[t1]->poly_start_unaligned >= POLY_TAIL_MIN_COUNT) no2gnode[transfrag[t1]->nodes[0]]->hardstart=1;
+						if(transfrag[t1]->longread && transfrag[t1]->abundance>CHI_WIN) no2gnode[transfrag[t1]->nodes[0]]->hardstart=1;  // MOD EDGE CASE trust a very abundant transcript v1 v3				if(transfrag[t1]->abundance>CHI_WIN) no2gnode[transfrag[t1]->nodes[0]]->hardstart=1; 
+						else if(s==0 && transfrag[t1]->poly_start_unaligned >= POLY_TAIL_STOP_COUNT) no2gnode[transfrag[t1]->nodes[0]]->hardstart=1;
 					}
-					else if(no2gnode[transfrag[t1]->nodes[0]]->hardstart) keepsource[transfrag[t1]->nodes[0]]=1;
+					else if(transfrag[t1]->longread && no2gnode[transfrag[t1]->nodes[0]]->hardstart) keepsource[transfrag[t1]->nodes[0]]=1;
 				}
 				if(!keepsink[transfrag[t1]->nodes.Last()]) {
 					if(transfrag[t1]->longend) {
 						keepsink[transfrag[t1]->nodes.Last()]= 1;//fprintf(stderr,"keep sink %d\n",transfrag[t1]->nodes.Last());}
 						//TODO - more subtle approach for abundannce needed (based on transfrag expression in bundle)
-						if(transfrag[t1]->abundance>CHI_WIN) no2gnode[transfrag[t1]->nodes.Last()]->hardend=1;  // MOD EDGE CASE trust a very abundant transcript v1 v3
-						else if(s==1 && transfrag[t1]->poly_end_unaligned >= POLY_TAIL_MIN_COUNT) no2gnode[transfrag[t1]->nodes.Last()]->hardend=1;
+						if(transfrag[t1]->longread && transfrag[t1]->abundance>CHI_WIN) no2gnode[transfrag[t1]->nodes.Last()]->hardend=1;  // MOD EDGE CASE trust a very abundant transcript v1 v3
+						else if(transfrag[t1]->longread && s==1 && transfrag[t1]->poly_end_unaligned >= POLY_TAIL_STOP_COUNT ) no2gnode[transfrag[t1]->nodes.Last()]->hardend=1;
 					}
 					else if(no2gnode[transfrag[t1]->nodes.Last()]->hardend) keepsink[transfrag[t1]->nodes.Last()]=1;
 				}
@@ -7972,6 +8042,7 @@ bool fwd_to_sink_fast_long(int i,GVec<int>& path,int& minpath,int& maxpath,GBitV
 		GVec<float>& nodecov,int gno,GIntHash<int>& gpos){
 	// find all parents -> if parent is source then go back
 	CGraphnode *inode=no2gnode[i];
+	
 	if(i<maxpath && !inode->childpat[maxpath]) return false; // I can not reach maxpath from node
 
 	int nchildren=inode->child.Count(); // number of children
@@ -8558,7 +8629,12 @@ bool fwd_to_sink_fast(int i,GVec<int>& path,GBitVec& pathpat,GPVec<CTransfrag>& 
 
 	int *pos=gpos[edge(i,maxc,gno)];
 	if(pos) pathpat[*pos]=1;
-	else GError("3 Found parent-child %d-%d not linked by edge\n",i,maxc);
+    else {
+        // Be tolerant if the selected child is the sink; some graphs
+        // might not have an explicit i->sink edge stored in gpos.
+        if (maxc!=gno-1)
+            GError("3 Found parent-child %d-%d not linked by edge\n",i,maxc);
+    }
 
 	return fwd_to_sink_fast(maxc,path,pathpat,transfrag,no2gnode,nodecov,gno,gpos);
 }
@@ -8606,8 +8682,11 @@ bool back_to_source_fast(int i,GVec<int>& path,GBitVec& pathpat,GPVec<CTransfrag
 			pathpat[inode->parent[p]]=1;
 			int *pos=gpos[edge(inode->parent[p],i,gno)];
 			if(pos) pathpat[*pos]=1;
-			else GError("4 Found parent-child %d-%d not linked by edge\n",inode->parent[p],i);
-
+            else {
+                // Allow missing source->i edge; some bundles might not register it.
+                if (inode->parent[p]!=0)
+                    GError("4 Found parent-child %d-%d not linked by edge\n",inode->parent[p],i);
+            }
 			for(int j=0;j<pnode->trf.Count();j++) { // for all transfrags going through parent
 				int t=pnode->trf[j];
 				if(transfrag[t]->abundance<epsilon) { // this transfrag was used before -> needs to be deleted
@@ -8695,8 +8774,11 @@ bool back_to_source_fast(int i,GVec<int>& path,GBitVec& pathpat,GPVec<CTransfrag
 	pathpat[maxp]=1;                 // if maxp is source I added it in the pathpat
 	int *pos=gpos[edge(maxp,i,gno)];
 	if(pos) pathpat[*pos]=1;
-	else GError("6 Found parent-child %d-%d not linked by edge\n",maxp,i);
-
+	else {
+	// Allow missing source->i edge mapping
+	if (maxp!=0)
+		GError("6 Found parent-child %d-%d not linked by edge\n",maxp,i);
+}
 	return back_to_source_fast(maxp,path,pathpat,transfrag,no2gnode,nodecov,gno,gpos);
 }
 
@@ -10049,91 +10131,173 @@ void parse_trflong(int gno,int geneno,char sign,GVec<CTransfrag> &keeptrf,GVec<i
 				int startnode=1;
 				int lastnode=path.Count()-2;
 
-				bool checkpath = true;
-				if (thardstart && thardend) {
-					// does the first node of the path == first node of transfrag t?
-					if (startnode != transfrag[t]->nodes[0] && lastnode != transfrag[t]->nodes.Last()) {
-						if(transfrag[t]->abundance>CHI_WIN) {
-							checkpath = false;
-							// we should update the maxi,path,minp,maxp,pathpat,gps	parameters to transfrag[t]
-							path.Clear();
-							pathpat.reset();
-							// source node
-							path.cAdd(0);
-							pathpat[0]=1;
-							int prev_node=0;
-							for (int ni=0; ni<transfrag[t]->nodes.Count(); ++ni) {
-								int u=transfrag[t]->nodes[ni];
-								path.Add(u);
-								pathpat[u]=1;
-								int* epos=gpos[edge(prev_node,u,gno)];
-								if (epos) pathpat[*epos]=1;
-								prev_node=u;
-							}
-							if (prev_node!=gno-1) {
-								int* epos=gpos[edge(prev_node,gno-1,gno)];
-								if (epos) pathpat[*epos]=1;
-								path.cAdd(gno-1);
-								pathpat[gno-1]=1;
-							}
-							// preserve transcript's allowed pattern
-							pathpat = pathpat | transfrag[t]->pattern;
-							// refresh bounds and indices for downstream logic
-							if (path.Count()>=2) {
-								minp = path[1];
-								maxp = path[path.Count()-2];
-								maxi = minp;
-								startnode = 1;
-								lastnode  = path.Count()-2;
+				bool checkpath = true;			
+					if (sign == '+') {
+						if (transfrag[t]->poly_end_unaligned >= POLY_TAIL_STOP_COUNT) {
+							//check if the last node of the path == last node of transfrag t
+							if (path[lastnode] > transfrag[t]->nodes.Last()) {
+									// trim path to the last node of transfrag t
+									// update maxi, path, maxp, pathpat as needed
+									int tlast = transfrag[t]->nodes.Last();
+									// find index of tlast within current path
+									int cutpos = -1;
+									for (int pi = startnode; pi <= lastnode; ++pi) {
+										if (path[pi] == tlast) { cutpos = pi; break; }
+									}
+									if (cutpos != -1 && cutpos < lastnode) {
+										GVec<int> newpath;
+										newpath.Add(0);
+										for (int pi = 1; pi <= cutpos; ++pi) newpath.Add(path[pi]);
+										newpath.cAdd(gno-1);
+
+										// rebuild pathpat for newpath
+										pathpat.reset();
+										for (int qi = 0; qi < newpath.Count(); ++qi) pathpat[newpath[qi]] = 1;
+										if (newpath.Count() >= 2) {
+											int* epos0 = gpos[edge(0, newpath[1], gno)];
+											if (epos0) pathpat[*epos0] = 1;
+										}
+										for (int qi = 2; qi < newpath.Count(); ++qi) {
+											int* epos = gpos[edge(newpath[qi-1], newpath[qi], gno)];
+											if (epos) pathpat[*epos] = 1;
+										}
+
+										path = newpath;
+										maxp = tlast;
+										lastnode = path.Count()-2; // update end index
+										pathpat = pathpat | transfrag[t]->pattern;
+									}
+								}
 							}
 						}
 
-						else {
-							checktrf.Add(t); // mark this transcript to be checked later with more permissive parameters
-							continue;
+					if (sign == '-') {
+						if (transfrag[t]->poly_start_unaligned >= POLY_TAIL_STOP_COUNT) {
+							//check if the first node of the path == first node of transfrag t
+							if (path[startnode] < transfrag[t]->nodes[0]) {
+								// trim path to the first node of transfrag t
+								// update path, minp, pathpat accordingly
+								int tfirst = transfrag[t]->nodes[0];
+								// find index of tfirst within current path
+								int keep_from = -1;
+								for (int pi = startnode; pi <= lastnode; ++pi) {
+									if (path[pi] == tfirst) { keep_from = pi; break; }
+								}
+								if (keep_from != -1 && keep_from > startnode) {
+									GVec<int> newpath;
+									newpath.Add(0);
+									for (int pi = keep_from; pi <= lastnode; ++pi) newpath.Add(path[pi]);
+									newpath.cAdd(gno-1);
+
+									// rebuild pathpat for newpath
+									pathpat.reset();
+									for (int qi = 0; qi < newpath.Count(); ++qi) pathpat[newpath[qi]] = 1;
+									if (newpath.Count() >= 2) {
+										int* epos0 = gpos[edge(0, newpath[1], gno)];
+										if (epos0) pathpat[*epos0] = 1;
+									}
+									for (int qi = 2; qi < newpath.Count(); ++qi) {
+										int* epos = gpos[edge(newpath[qi-1], newpath[qi], gno)];
+										if (epos) pathpat[*epos] = 1;
+									}
+
+									path = newpath;
+									minp = tfirst;
+									startnode = 1;             // first interior index
+									lastnode = path.Count()-2;   // update end index
+									pathpat = pathpat | transfrag[t]->pattern;
+									maxi = minp;
+								}
+							}
 						}
 					}
-				}
+					
+					if (thardstart && thardend) {
+						// does the first node of the path == first node of transfrag t?
+						if (path[startnode] != transfrag[t]->nodes[0] || path[lastnode] != transfrag[t]->nodes.Last()) {
+							if(transfrag[t]->abundance>CHI_WIN) {
+								checkpath = false;
+								// we should update the maxi,path,minp,maxp,pathpat,gpos parameters to transfrag[t]
+								path.Clear();
+								pathpat.reset();
+								// source node
+								path.cAdd(0);
+								pathpat[0]=1;
+								int prev_node=0;
+								for (int ni=0; ni<transfrag[t]->nodes.Count(); ++ni) {
+									int u=transfrag[t]->nodes[ni];
+									path.Add(u);
+									pathpat[u]=1;
+									int* epos=gpos[edge(prev_node,u,gno)];
+									if (epos) pathpat[*epos]=1;
+									prev_node=u;
+								}
+								if (prev_node!=gno-1) {
+									int* epos=gpos[edge(prev_node,gno-1,gno)];
+									if (epos) pathpat[*epos]=1;
+									path.cAdd(gno-1);
+									pathpat[gno-1]=1;
+								}
+								// preserve transcript's allowed pattern
+								pathpat = pathpat | transfrag[t]->pattern;
+								// refresh bounds and indices for downstream logic
+								if (path.Count()>=2) {
+									minp = path[1];
+									maxp = path[path.Count()-2];
+									maxi = minp;
+									startnode = 1;
+									lastnode  = path.Count()-2;
+								}
+							}
 
-				// check if the splices in the path have LR support
-				if (checkpath && lastnode >= startnode) {
-					GVec<int> splicePos;
-
-					for (int p = startnode; p <= lastnode; ++p) {
-						if (p==1) continue; // no edge before first node
-						int u = path[p-1];
-						int v = path[p];
-						if (is_splice_between(no2gnode[u], no2gnode[v])) {
-							splicePos.Add(p);
-						}
-					}
-
-					// Require an LR witness across every pair of *consecutive* splice edges,
-					// ignoring any number of contiguous nodes between them.
-					bool unwitnessed = false;
-					for (int k = 1; k < splicePos.Count(); ++k) {
-						int pA = splicePos[k-1];      // right node index of first splice edge
-						int pB = splicePos[k];        // right node index of next splice edge
-
-						int la = path[pA-1];          // first splice: (la -> ra)
-						int ra = path[pA];
-						int lb = path[pB-1];          // second splice: (lb -> rb)
-						int rb = path[pB];
-
-						if (!has_lr_witness_two_splices(la, ra, lb, rb, transfrag)) {
-							unwitnessed = true;
-							//if the startnode and endnode of the transfrag are hardstart and hardend, then add to checktrf:
-							if (no2gnode[transfrag[t]->nodes[0]]->hardstart && no2gnode[transfrag[t]->nodes.Last()]->hardend) {
+							else {
 								checktrf.Add(t); // mark this transcript to be checked later with more permissive parameters
+								continue;
 							}
-							break;
 						}
 					}
+				
 
-					if (unwitnessed) {
-						continue;                 // skip building exons for this candidate
+					// check if the splices in the path have LR support
+					if (checkpath && lastnode >= startnode) {
+						GVec<int> splicePos;
+
+						for (int p = startnode; p <= lastnode; ++p) {
+							if (p==1) continue; // no edge before first node
+							int u = path[p-1];
+							int v = path[p];
+							if (is_splice_between(no2gnode[u], no2gnode[v])) {
+								splicePos.Add(p);
+							}
+						}
+
+						// Require an LR witness across every pair of *consecutive* splice edges,
+						// ignoring any number of contiguous nodes between them.
+						bool unwitnessed = false;
+						for (int k = 1; k < splicePos.Count(); ++k) {
+							int pA = splicePos[k-1];      // right node index of first splice edge
+							int pB = splicePos[k];        // right node index of next splice edge
+
+							int la = path[pA-1];          // first splice: (la -> ra)
+							int ra = path[pA];
+							int lb = path[pB-1];          // second splice: (lb -> rb)
+							int rb = path[pB];
+
+							if (!has_lr_witness_two_splices(la, ra, lb, rb, transfrag, no2gnode)) {
+								unwitnessed = true;
+								//if the startnode and endnode of the transfrag are hardstart and hardend, then add to checktrf:
+								if (no2gnode[transfrag[t]->nodes[0]]->hardstart && no2gnode[transfrag[t]->nodes.Last()]->hardend) {
+									checktrf.Add(t); // mark this transcript to be checked later with more permissive parameters
+								}
+								break;
+							}
+						}
+
+						if (unwitnessed) {
+							continue;                 // skip building exons for this candidate
+						}
 					}
-				}
+								
 
 				flux=long_max_flow(gno,path,istranscript,transfrag,no2gnode,nodeflux,pathpat,t); // I should not use other guide transfrags beyond the actual guide one!!
 
@@ -10290,7 +10454,7 @@ void parse_trflong(int gno,int geneno,char sign,GVec<CTransfrag> &keeptrf,GVec<i
 							endpoint= exons.Last().end;
 						}
 
-                                                CPrediction *p=new CPrediction(geneno, g,startpoint , endpoint, (float)cov, sign, len);
+                        CPrediction *p=new CPrediction(geneno, g,startpoint , endpoint, (float)cov, sign, len);
 						p->exons=exons;
 						p->exoncov=exoncov;
 						p->mergename="."; // I should not delete this prediction
@@ -10503,6 +10667,10 @@ void get_trf_long_mix(int gno,int edgeno, GIntHash<int> &gpos,GPVec<CGraphnode>&
 		if(i && i<gno-1) {
 			for(int j=0;j<inode->trf.Count();j++) { // for all transfrags going through node
 				int t=inode->trf[j];
+				//if(transfrag[t]->longread && transfrag[t]->nodes[0]<i) { // entering transfrags:
+				/*if(transfrag[t]->longread && transfrag[t]->nodes.Last()>i) { // exiting transfrags: this is more consistent with the nodeflux computation
+					nodecov[i]+=transfrag[t]->abundance;
+				}*/
 				if(!transfrag[t]->guide || transfrag[t]->abundance>=trthr*ERROR_PERC+epsilon) { // CHANGE IN MIXED MODE TOO??
 					//fprintf(stderr,"node[%d]: Add transfrag[%d]->abundance=%f\n",i,t,transfrag[t]->abundance);
 					if(transfrag[t]->nodes[0] && transfrag[t]->nodes.Last()<gno-1) {
@@ -10658,8 +10826,8 @@ void get_trf_long_mix(int gno,int edgeno, GIntHash<int> &gpos,GPVec<CGraphnode>&
 						 GSeg exon(nodestart,nodeend);
 						 exons.Add(exon);
 						 cov+=excov;
-                                                 float fexcov=(float)excov;
-                                                 exoncov.Add(fexcov);
+                         float fexcov=(float)excov;
+                         exoncov.Add(fexcov);
 						 j++;
 					 }
 
@@ -13934,13 +14102,18 @@ void continue_read(GList<CReadAln>& readlist,int n,int idx) {
 	}
 }
 
-// Helper function to shorten first exon to a single base and update read properties
+// Helper function to shorten first exon to 3bp and update read properties
 void shortenFirstExon(CReadAln &rd) {
     int nEx = rd.segs.Count();
     if(nEx < 2) return;
-    
-    // uint old_start = rd.segs[0].start;
-    rd.segs[0].start = rd.segs[0].end;
+
+    int exonLen = rd.segs[0].len();
+    if(exonLen < 3) return;
+
+    int newStart = rd.segs[0].end - 2;
+    if(newStart < rd.segs[0].start) newStart = rd.segs[0].start;
+
+    rd.segs[0].start = newStart;
     rd.start = rd.segs[0].start;
     
     // Recalculate read length
@@ -13953,13 +14126,18 @@ void shortenFirstExon(CReadAln &rd) {
     //          old_start, rd.start);
 }
 
-// Helper function to shorten last exon to a single base and update read properties
+// Helper function to shorten last exon to 3bp and update read properties
 void shortenLastExon(CReadAln &rd) {
     int nEx = rd.segs.Count();
     if(nEx < 2) return;
-    
-    // uint old_end = rd.segs[nEx-1].end;
-    rd.segs[nEx-1].end = rd.segs[nEx-1].start;
+
+    int exonLen = rd.segs[nEx-1].len();
+    if(exonLen < 3) return;
+
+    int newEnd = rd.segs[nEx-1].start + 2;
+    if(newEnd > rd.segs[nEx-1].end) newEnd = rd.segs[nEx-1].end;
+
+    rd.segs[nEx-1].end = newEnd;
     rd.end = rd.segs[nEx-1].end;
     
     // Recalculate read length
@@ -14023,7 +14201,7 @@ int build_graphs(BundleData* bdata) {
 	}
 	*/
 	// === CPAS from long reads: add point cuts into tstartend =================
-	if (longreads) {
+	if (longreads || mixedMode) {
 		const int refend = (bpcov && bpcov->Count() > 0)
 						? (refstart + (int)bpcov->Count() - 1)
 						: (bdata->end ? bdata->end : refstart);
@@ -14034,24 +14212,20 @@ int build_graphs(BundleData* bdata) {
 			const CReadAln& rd = *(readlist[n]);
 			if (!rd.longread) continue;
 
-			const bool hasPlusTail  = rd.unaligned_polyA;
-			const bool hasMinusTail = rd.unaligned_polyT;
+				// Use the actual tail evidence counts (not just booleans)
+				const int wPlus  = (int)rd.unaligned_polyA; // polyA evidence count
+				const int wMinus = (int)rd.unaligned_polyT; // polyT evidence count
 
-			if (rd.strand == 1) {
-				if (hasPlusTail) raw_plus.cAdd((int)rd.end);
-			} else if (rd.strand == -1) {
-				if (hasMinusTail) raw_minus.cAdd((int)rd.start);
-			} else { // rd.strand == 0
-				if (hasPlusTail && !hasMinusTail) raw_plus.cAdd((int)rd.end);
-				else if (hasMinusTail && !hasPlusTail) raw_minus.cAdd((int)rd.start);
-				else if (rd.unaligned_polyA != rd.unaligned_polyT) {
-					if (rd.unaligned_polyA) raw_plus.cAdd((int)rd.end);
-					else                    raw_minus.cAdd((int)rd.start);
-				} else if (hasPlusTail || hasMinusTail) {
-					raw_plus.cAdd((int)rd.end);
-					raw_minus.cAdd((int)rd.start);
+				if (rd.strand == 1) {
+					for (int k = 0; k < wPlus; ++k) raw_plus.cAdd((int)rd.end);
 				}
-			}
+				else if (rd.strand == -1) {
+					for (int k = 0; k < wMinus; ++k) raw_minus.cAdd((int)rd.start);
+				}
+				else { // rd.strand == 0 (unknown): include both sides, weighted
+					for (int k = 0; k < wPlus;  ++k) raw_plus.cAdd((int)rd.end);
+					for (int k = 0; k < wMinus; ++k) raw_minus.cAdd((int)rd.start);
+				}
 		}
 
 		GVec<int> centers_plus, counts_plus;
@@ -14059,11 +14233,13 @@ int build_graphs(BundleData* bdata) {
 		cluster_positions_with_counts(raw_plus,  centers_plus,  counts_plus);
 		cluster_positions_with_counts(raw_minus, centers_minus, counts_minus);
 
-		// merge into tstartend (CPAS is an end on both strands: start=false)
-		for (int i = 0; i < centers_plus.Count();  ++i)
-			add_cpas_trimpoint(centers_plus[i],  refstart, refend, tstartend, /*is_start=*/false, counts_plus[i]);
-		for (int i = 0; i < centers_minus.Count(); ++i)
-			add_cpas_trimpoint(centers_minus[i], refstart, refend, tstartend, /*is_start=*/false, counts_minus[i]);
+				// Merge CPAS into tstartend as graph-boundary anchors:
+				//   plus strand CPAS  -> right boundary => start=false (sink link)
+				//   minus strand CPAS -> left boundary  => start=true  (source link)
+			for (int i = 0; i < centers_plus.Count();  ++i)
+				add_cpas_trimpoint(centers_plus[i],  refstart, refend, tstartend, /*is_start=*/false, counts_plus[i]);
+			for (int i = 0; i < centers_minus.Count(); ++i)
+				add_cpas_trimpoint(centers_minus[i], refstart, refend, tstartend, /*is_start=*/true, counts_minus[i]);
 
 		// sort so downstream forward scan sees all points
 		if (tstartend.Count() > 1) {
@@ -14654,7 +14830,6 @@ int build_graphs(BundleData* bdata) {
 
 	bool resort=false;
 	int njunc=junction.Count();
-
 	for (int n=0;n<readlist.Count();n++) {
 		CReadAln & rd=*(readlist[n]);
 
@@ -14911,6 +15086,7 @@ int build_graphs(BundleData* bdata) {
 			for(i=0;i<rd.juncs.Count();i++) { fprintf(stderr," %d-%d:%d",rd.segs[i].start,rd.segs[i].end,rd.juncs[i]->strand);}
 			fprintf(stderr," %d-%d\n",rd.segs[i].start,rd.segs[i].end);*/
 
+			color=add_read_to_group(n,readlist,color,group,currgroup,startgroup,readgroup,equalcolor,merge);
 
 			// count fragments
 			if(!rd.unitig)
@@ -14927,43 +15103,11 @@ int build_graphs(BundleData* bdata) {
 												    // a super-read -> I might want to re-estimate this from coverage and have some input for read length; or I might only use TPM
 			}
 
-			if (rd.longread) {
-				//TODO: can also remove RT drop-off at poly(rA/rU)
-				// unknown strand:
-				
-				int start = (int)rd.start;
-				int end = (int)rd.end;
-
-				if (rd.strand == 0) {
-					if (rd.aligned_polyA && !rd.unaligned_polyA) shortenLastExon(rd);
-					if (rd.aligned_polyT && !rd.unaligned_polyT) shortenFirstExon(rd);
-				}
-					
-				// Forward strand
-				if (rd.strand == 1) {
-					if (rd.aligned_polyA && !rd.unaligned_polyA) shortenLastExon(rd);
-				}
-
-				// Reverse strand
-				else if (rd.strand == -1) {
-					if (rd.aligned_polyT && !rd.unaligned_polyT) shortenFirstExon(rd);
-				}
-			}
-
 			//fprintf(stderr,"now color=%d\n",color);
 		//}
 		//else { fprintf(stderr,"read[%d] is not kept\n",n);}
 		//else clean_read_junctions(readlist[n]);
 	}
-
-	if(longreads) {
-		readlist.Sort();
-	}
-
-	for (int n = 0; n < readlist.Count(); n++) {
-			color=add_read_to_group(n,readlist,color,group,currgroup,startgroup,readgroup,equalcolor,merge);
-	}
-	
 
 	if(resort) {
 		junction.setSorted(true);
@@ -17024,16 +17168,88 @@ int infer_transcripts(BundleData* bundle) {
 	else if(bundle->keepguides.Count() || !eonly) {
 		//fprintf(stderr,"Process %d reads from %lu.\n",bundle->readlist.Count(),bundle->numreads);
 
-		count_good_junctions(bundle);
+	for (int n=0;n<bundle->readlist.Count();n++) {
+		CReadAln & rd=*(bundle->readlist[n]);
+		bool resort = false;
+
+		if (rd.longread) {
+			//TODO: can also remove RT drop-off at poly(rA/rU)
+			// unknown strand:
+			if (rd.strand == 0) {
+				if (rd.aligned_polyA && !rd.unaligned_polyA) shortenLastExon(rd);
+				if (rd.aligned_polyT && !rd.unaligned_polyT) {
+					shortenFirstExon(rd);
+					resort = true;
+				}
+			}
+				
+			// Forward strand
+			if (rd.strand == 1) {
+				if (rd.aligned_polyA && !rd.unaligned_polyA) shortenLastExon(rd);
+			}
+
+			// Reverse strand
+			else if (rd.strand == -1) {
+				if (rd.aligned_polyT && !rd.unaligned_polyT){
+					shortenFirstExon(rd);
+					resort = true;
+				}
+			}
+		}
+	}
 	
-		//need to resort because of deleted polyT exons.
-		if(longreads) {
-			bundle->readlist.Sort();
+
+	if(longreads) {
+		bundle->readlist.Sort();
+	}
+
+	if (mixedMode) {
+		// Snapshot old order and set per-read tie-breakers
+		GVec<CReadAln*> oldptr;
+		oldptr.Resize(bundle->readlist.Count());
+		bundle->readlist.setSorted(false);  
+		for (int i = 0; i < bundle->readlist.Count(); ++i) {
+			oldptr[i] = bundle->readlist[i];
+			bundle->readlist[i]->sort_tiebreaker = i;
 		}
 
+		// Stable coordinate sort
+		bundle->readlist.setSorted(coordStableCmp); // sets comparator and sorts
+		bundle->readlist.Sort();                     // force the sort
 
-		geneno = build_graphs(bundle);
+
+		// Build pointer->newIndex map for pair remapping
+		GHashMap<CReadAln*, int> newIndex(false);
+		for (int i = 0; i < bundle->readlist.Count(); ++i) newIndex.Add(bundle->readlist[i], i);
+
+		// Remap pair_idx to new indices
+		for (int i = 0; i < oldptr.Count(); ++i) {
+			CReadAln* r = oldptr[i];
+			for (int j = 0; j < r->pair_idx.Count(); ++j) {
+				int oldj = r->pair_idx[j];
+				if (oldj < 0 || oldj >= oldptr.Count()) { r->pair_idx[j] = -1; continue; }
+				CReadAln* pr = oldptr[oldj];
+				int* np = newIndex[pr];
+				r->pair_idx[j] = np ? *np : -1;
+			}
+		}
 	}
+
+	// #ifdef DEBUG
+    // // moved-count debug
+    // int moved = 0;
+    // for (int i = 0; i < bundle->readlist.Count(); ++i)
+    //     if (bundle->readlist[i]->sort_tiebreaker != i) moved++;
+    // GMessage("Mixed-mode stable sort moved %d of %d reads\n",
+    //          moved, bundle->readlist.Count());
+	// #endif
+	// }
+
+	count_good_junctions(bundle);
+
+	geneno = build_graphs(bundle);
+	}
+
 
 
 /*

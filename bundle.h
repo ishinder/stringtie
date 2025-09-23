@@ -189,6 +189,8 @@ struct CReadAln:public GSeg {
     uint16_t unaligned_polyT;
     uint16_t unaligned_polyA;
 
+	int sort_tiebreaker = 0; // original position within the bundle before resort
+
 	CReadAln(char _strand=0, short int _nh=0,
 			int rstart=0, int rend=0, TAlnInfo* tif=NULL): GSeg(rstart, rend), //name(rname),
 					strand(_strand),nh(_nh), len(0), read_count(0), unitig(false),longread(false),pair_count(),pair_idx(),

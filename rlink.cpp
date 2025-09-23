@@ -10146,7 +10146,7 @@ void parse_trflong(int gno,int geneno,char sign,GVec<CTransfrag> &keeptrf,GVec<i
 									}
 									if (cutpos != -1 && cutpos < lastnode) {
 										GVec<int> newpath;
-										newpath.Add(0);
+										newpath.cAdd(0);
 										for (int pi = 1; pi <= cutpos; ++pi) newpath.Add(path[pi]);
 										newpath.cAdd(gno-1);
 
@@ -10185,7 +10185,7 @@ void parse_trflong(int gno,int geneno,char sign,GVec<CTransfrag> &keeptrf,GVec<i
 								}
 								if (keep_from != -1 && keep_from > startnode) {
 									GVec<int> newpath;
-									newpath.Add(0);
+									newpath.cAdd(0);
 									for (int pi = keep_from; pi <= lastnode; ++pi) newpath.Add(path[pi]);
 									newpath.cAdd(gno-1);
 

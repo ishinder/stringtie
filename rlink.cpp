@@ -6002,8 +6002,8 @@ void process_transfrags(int s, int gno,int edgeno,GPVec<CGraphnode>& no2gnode,GP
 					if(transfrag[t1]->longstart) {
 						keepsource[transfrag[t1]->nodes[0]]=1; //fprintf(stderr,"keep source %d\n",transfrag[t1]->nodes[0]);}
 						//TODO - more subtle approach for abundannce needed (based on transfrag expression in bundle)
-						if(transfrag[t1]->longread && transfrag[t1]->abundance>CHI_WIN) no2gnode[transfrag[t1]->nodes[0]]->hardstart=1;  // MOD EDGE CASE trust a very abundant transcript v1 v3				if(transfrag[t1]->abundance>CHI_WIN) no2gnode[transfrag[t1]->nodes[0]]->hardstart=1; 
-						else if(s==0 && transfrag[t1]->poly_start_unaligned >= POLY_TAIL_STOP_COUNT) no2gnode[transfrag[t1]->nodes[0]]->hardstart=1;
+						// if(transfrag[t1]->longread && transfrag[t1]->abundance>CHI_WIN) no2gnode[transfrag[t1]->nodes[0]]->hardstart=1;  // MOD EDGE CASE trust a very abundant transcript v1 v3				if(transfrag[t1]->abundance>CHI_WIN) no2gnode[transfrag[t1]->nodes[0]]->hardstart=1; 
+						if(s==0 && transfrag[t1]->poly_start_unaligned >= POLY_TAIL_STOP_COUNT) no2gnode[transfrag[t1]->nodes[0]]->hardstart=1; // I don't think this line is needed because we had already marked the nodes as hardstart/hardend
 					}
 					else if(transfrag[t1]->longread && no2gnode[transfrag[t1]->nodes[0]]->hardstart) keepsource[transfrag[t1]->nodes[0]]=1;
 				}
@@ -6011,8 +6011,8 @@ void process_transfrags(int s, int gno,int edgeno,GPVec<CGraphnode>& no2gnode,GP
 					if(transfrag[t1]->longend) {
 						keepsink[transfrag[t1]->nodes.Last()]= 1;//fprintf(stderr,"keep sink %d\n",transfrag[t1]->nodes.Last());}
 						//TODO - more subtle approach for abundannce needed (based on transfrag expression in bundle)
-						if(transfrag[t1]->longread && transfrag[t1]->abundance>CHI_WIN) no2gnode[transfrag[t1]->nodes.Last()]->hardend=1;  // MOD EDGE CASE trust a very abundant transcript v1 v3
-						else if(transfrag[t1]->longread && s==1 && transfrag[t1]->poly_end_unaligned >= POLY_TAIL_STOP_COUNT ) no2gnode[transfrag[t1]->nodes.Last()]->hardend=1;
+						// if(transfrag[t1]->longread && transfrag[t1]->abundance>CHI_WIN) no2gnode[transfrag[t1]->nodes.Last()]->hardend=1;  // MOD EDGE CASE trust a very abundant transcript v1 v3
+						if(transfrag[t1]->longread && s==1 && transfrag[t1]->poly_end_unaligned >= POLY_TAIL_STOP_COUNT ) no2gnode[transfrag[t1]->nodes.Last()]->hardend=1;  // I don't think this line is needed because we had already marked the nodes as hardstart/hardend
 					}
 					else if(no2gnode[transfrag[t1]->nodes.Last()]->hardend) keepsink[transfrag[t1]->nodes.Last()]=1;
 				}

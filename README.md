@@ -1,3 +1,19 @@
+> ## About This Fork
+>
+> This fork contains my contributions to **StringTie3's long-read module**, including:
+> - Poly(A/T) tail detection and artifact handling
+> - Transcript boundary anchoring via cleavage/poly(A) site clustering
+> - Terminal exon shortening for alignment artifacts
+> - Nascent transcript classification for long reads
+>
+> These changes have been merged into the [main StringTie repository](https://github.com/gpertea/stringtie).
+>
+> 📄 **[See CONTRIBUTIONS.md for full details](CONTRIBUTIONS.md)**
+>
+> 📚 **Publication:** Shinder I, et al. *"StringTie3 Improves Total RNA-seq Assembly by Resolving Nascent and Mature Transcripts."* Nature Methods (2025). [Accepted]
+
+---
+
 ![alt text](https://img.shields.io/badge/License-MIT-blue.svg "MIT License")
 
 ## StringTie: efficient transcript assembly and quantitation of RNA-Seq data

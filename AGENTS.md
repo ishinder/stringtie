@@ -40,6 +40,23 @@ is a connected genomic locus expanded by overlapping alignments and guides.
 transcripts until `processBundle()` prints the result and clears the bundle.
 See [MERGE_MODE.md](MERGE_MODE.md) for the detailed `--merge` workflow.
 
+## Subsystem notes
+
+Read the matching note before changing or debugging these areas. Each note is
+checked against a stated commit and separates verified facts from open
+hypotheses. Update the note when you change the behavior it describes.
+
+```text
+Area                                   Note
+-------------------------------------  ---------------------------------
+processRead, duplicate pooling          docs/PROCESSREAD.md
+long reads: polyA/T tails, end anchors  docs/LONG_READS_POLYA.md
+read/junction strand, deletions, -E     docs/STRAND_AND_JUNCTIONS.md
+guides, -e/-A output, -M                docs/GUIDES_AND_ABUNDANCE.md
+build, tests, test data                 docs/BUILD_AND_TEST.md
+--merge                                 MERGE_MODE.md
+```
+
 ## C++ generation conventions
 
 Use C and C++11. Prefer plain C-style code and the existing gclib types over STL:

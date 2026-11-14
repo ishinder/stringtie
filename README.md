@@ -10,7 +10,9 @@
 >
 > 📄 **[See CONTRIBUTIONS.md for full details](CONTRIBUTIONS.md)**
 >
-> 📚 **Publication:** Shinder I, et al. *"StringTie3 Improves Total RNA-seq Assembly by Resolving Nascent and Mature Transcripts."* Nature Methods (2025). [Accepted]
+> 📚 **Publication:** Shinder I, et al. [*"StringTie3 improves total RNA-seq assembly by resolving nascent and mature transcripts."*](https://doi.org/10.1038/s41592-026-03080-3) Nature Methods (2026).
+>
+> 🛠️ **Developer notes** on the long-read code, strand handling and testing: [docs/](docs/README.md)
 
 ---
 

@@ -4,7 +4,7 @@ This fork contains development work for **StringTie3's long-read module** that w
 
 ## Publication
 
-> Shinder I, Pertea G, Hu R, Rudnick Z, Pertea M. **StringTie3 Improves Total RNA-seq Assembly by Resolving Nascent and Mature Transcripts.** *Nature Methods* (2025). [Accepted]
+> Shinder I, Pertea G, Hu R, Rudnick Z, Pertea M. [**StringTie3 improves total RNA-seq assembly by resolving nascent and mature transcripts.**](https://doi.org/10.1038/s41592-026-03080-3) *Nature Methods* (2026). doi:10.1038/s41592-026-03080-3
 >
 > Preprint: [bioRxiv 10.1101/2025.05.21.655404](https://www.biorxiv.org/content/10.1101/2025.05.21.655404)
 
@@ -66,8 +66,9 @@ The long-read module refinements described in the StringTie3 paper (Methods: *Lo
 
 **2. Terminal Alignment Artifact Handling**
 - Detect erroneous terminal exons from poly(A) tails splice-aligning to A/T-rich genomic loci
-- Discard single-exon alignments with terminal aligned poly(A/T) (frequent artifacts)
-- For multi-exon: shorten terminal exon to 3 bp to preserve splice junction
+- Discard alignments with ≤2 exons that have a terminal aligned poly(A/T) (frequent artifacts); reads overlapping a guide are exempt. The paper's Methods describe the single-exon case; the code screens ≤2 exons
+- Remove a terminal exon that is ≥80% A (last) or T (first), recording it as an unaligned tail
+- For multi-exon reads with an aligned tail but no soft-clipped tail: shorten the terminal exon to 3 bp to preserve the splice junction
 
 **3. Poly(A) Site Anchoring (CPAS)**
 - Cluster unaligned tail coordinates into 5 bp bins
@@ -78,23 +79,25 @@ The long-read module refinements described in the StringTie3 paper (Methods: *Lo
 
 ## Functions Implemented
 
+Locations are in upstream `master` at `4bed517`.
+
 | Function | Location | Purpose |
 |----------|----------|---------|
-| `poly_window_meets()` | rlink.cpp:510-545 | Core A/T content checking |
-| `check_aligned_polyT_start()` | rlink.cpp:550-565 | Aligned poly-T at read start |
-| `check_aligned_polyA_end()` | rlink.cpp:568-582 | Aligned poly-A at read end |
-| `check_unaligned_polyA_end()` | rlink.cpp:585-600 | Soft-clipped poly-A detection |
-| `check_unaligned_polyT_start()` | rlink.cpp:603-617 | Soft-clipped poly-T detection |
-| `check_last_exon_polyA()` | rlink.cpp:619-637 | Last exon A-fraction check |
-| `check_first_exon_polyT()` | rlink.cpp:639-656 | First exon T-fraction check |
-| `shortenFirstExon()` | rlink.cpp:14118-14139 | Trim first exon to 3 bp |
-| `shortenLastExon()` | rlink.cpp:14142-14163 | Trim last exon to 3 bp |
-| `cluster_positions_with_counts()` | rlink.cpp:379-426 | CPAS position clustering |
-| `add_cpas_trimpoint()` | rlink.cpp:428-447 | Merge CPAS into graph anchors |
-| `ok_to_demote()` | rlink.cpp:362-370 | Conservative junction demotion |
-| `junc_ratio_threshold()` | rlink.cpp:354-359 | Tiered demotion thresholds |
-| `is_splice_between()` | rlink.cpp:450-453 | Check splice gap between nodes |
-| `has_lr_witness_two_splices()` | rlink.cpp:483-506 | Long-read validation for splice pairs |
+| `poly_window_meets()` | rlink.cpp:573 | Core A/T content checking |
+| `check_aligned_polyT_start()` | rlink.cpp:613 | Aligned poly-T at read start |
+| `check_aligned_polyA_end()` | rlink.cpp:629 | Aligned poly-A at read end |
+| `check_unaligned_polyA_end()` | rlink.cpp:644 | Soft-clipped poly-A detection |
+| `check_unaligned_polyT_start()` | rlink.cpp:660 | Soft-clipped poly-T detection |
+| `check_last_exon_polyA()` | rlink.cpp:674 | Last exon A-fraction check |
+| `check_first_exon_polyT()` | rlink.cpp:692 | First exon T-fraction check |
+| `shortenFirstExon()` | rlink.cpp:14450 | Trim first exon to 3 bp |
+| `shortenLastExon()` | rlink.cpp:14474 | Trim last exon to 3 bp |
+| `cluster_positions_with_counts()` | rlink.cpp:434 | CPAS position clustering |
+| `add_cpas_trimpoint()` | rlink.cpp:484 | Merge CPAS into graph anchors |
+| `ok_to_demote()` | rlink.cpp:417 | Conservative junction demotion |
+| `junc_ratio_threshold()` | rlink.cpp:409 | Tiered demotion thresholds |
+| `is_splice_between()` | rlink.cpp:505 | Check splice gap between nodes |
+| `has_lr_witness_two_splices()` | rlink.cpp:538 | Long-read validation for splice pairs |
 
 ---
 
@@ -165,10 +168,10 @@ git log --oneline --author="Ida"
 # Count lines by author in key files
 git blame rlink.cpp | grep -i "ida\|shinder" | wc -l
 
-# View specific contributions
-git blame -L354,430 rlink.cpp    # Constants and helper functions
-git blame -L510,660 rlink.cpp    # PolyA detection functions
-git blame -L14118,14165 rlink.cpp # shortenExon functions
+# View specific contributions (by function name, so line drift doesn't matter)
+git blame -L :poly_window_meets rlink.cpp
+git blame -L :check_unaligned_polyA_end rlink.cpp
+git blame -L :shortenFirstExon rlink.cpp
 
 # Show commit statistics
 git show 23af2ba --stat
@@ -176,9 +179,18 @@ git show 23af2ba --stat
 
 ---
 
+## Developer Notes
+
+How the polyA/T code works today, what was measured on real data (including why
+tail-derived strand is unreliable on ONT cDNA), and the open questions are in
+[docs/LONG_READS_POLYA.md](docs/LONG_READS_POLYA.md). The other notes are
+indexed in [docs/README.md](docs/README.md).
+
+---
+
 ## Syncing This Fork
 
-This fork's `master` branch may be behind the main repository. The contributions described above have been integrated upstream. For the latest StringTie3:
+The `fork-docs` branch is merged with upstream `master` (last sync: `4bed517`, 2026-11-14). The contributions described above have been integrated upstream. For the latest StringTie3:
 ```bash
 git clone https://github.com/gpertea/stringtie
 cd stringtie

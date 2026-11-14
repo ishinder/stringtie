@@ -100,6 +100,14 @@ struct GPtFeature { //point feature (single coordinate)
  bool operator==(const GPtFeature &o) { return coord==o.coord; }
     //-- should really match ftype and strand too,
     //   but we don't care, for bundle inclusion
+ // TSS and CPAS are the biological ends of a transcript on the given strand:
+ // returns -1 for a left (lower coordinate) end, i.e. + strand TSS or - strand CPAS,
+ // 1 for a right end, and 0 for the other feature types
+ int txEnd() {
+   if (ftype==GPFT_TSS) return (strand<0) ? 1 : -1;
+   if (ftype==GPFT_CPAS) return (strand<0) ? -1 : 1;
+   return 0;
+ }
 };
 
 
@@ -128,13 +136,18 @@ struct GRefPtData {
 //holding transcript info for --merge mode
 struct TAlnInfo {
 	GStr name; //transcript name
+	GStr gene_id; //input gene identifier, when available
 	int fileidx; //index of transcript file in the TInputFiles.files array
 	double cov;
 	double fpkm;
 	double tpm;
+	uint cds_start;
+	uint cds_end;
+	bool qpass; //passes explicitly requested merge abundance filters
+	bool mpass; //still a merge input after the per-record filters (--report fate tally)
 	int g;
 	TAlnInfo(const char* rname=NULL, int fidx=0):name(rname), fileidx(fidx),
-			cov(-1),fpkm(-1),tpm(-1),g(-1) { }
+			cov(-1),fpkm(-1),tpm(-1),cds_start(0),cds_end(0),qpass(true),mpass(true),g(-1) { }
 };
 
 // # 0: strand; 1: start; 2: end; 3: nreads; 4: nreads_good;
@@ -229,11 +242,55 @@ struct CReadAln:public GSeg {
 	~CReadAln() { if(mergeMode) {delete tinfo;} }
 };
 
+// The tags read for every alignment, found in one pass over the tags of the record:
+// each GSamRecord::tag_...() call scans them from the start, and a tag that is not
+// there costs a scan of all of them. The pointers are what bam_aux_get() returns,
+// NULL when the tag is absent; they are valid while the record is not changed.
+struct CAlnTags {
+	uint8_t *xs, *ts, *nh, *hi, *nm, *yk, *yc, *nM;
+	CAlnTags():xs(NULL),ts(NULL),nh(NULL),hi(NULL),nm(NULL),yk(NULL),yc(NULL),nM(NULL) { }
+	void get(bam1_t* b) { //keeps the first occurrence of a tag, like bam_aux_get()
+		xs=ts=nh=hi=nm=yk=yc=nM=NULL;
+		for (uint8_t* s=bam_aux_first(b); s; s=bam_aux_next(b, s)) {
+			const char* t=bam_aux_tag(s);
+			switch (t[0]) {
+			  case 'X': if (t[1]=='S' && !xs) xs=s; break;
+			  case 't': if (t[1]=='s' && !ts) ts=s; break;
+			  case 'N': if (t[1]=='H') { if (!nh) nh=s; }
+			            else if (t[1]=='M' && !nm) nm=s;
+			            break;
+			  case 'H': if (t[1]=='I' && !hi) hi=s; break;
+			  case 'Y': if (t[1]=='K') { if (!yk) yk=s; }
+			            else if (t[1]=='C' && !yc) yc=s;
+			            break;
+			  case 'n': if (t[1]=='M' && !nM) nM=s; break;
+			}
+		}
+	}
+	static char char1(uint8_t* s) { //first character of an A or Z tag, as GSamRecord::tag_char1()
+		if (s==NULL) return 0;
+		int type=*s++;
+		return (type=='A' || type=='Z') ? *(char*)s : 0;
+	}
+	//'+' or '-' from the XS tag or from minimap2's ts tag, else '.', as GSamRecord::spliceStrand()
+	char spliceStrand(bool reversed) {
+		char c=char1(xs);
+		if (c==0) {
+			char m=char1(ts);
+			if (m=='+' || m=='-') c=reversed ? ((m=='+') ? '-' : '+') : m;
+		}
+		return (c=='+' || c=='-') ? c : '.';
+	}
+	static int64_t intval(uint8_t* s) { return s ? bam_aux2i(s) : 0; } //as GSamRecord::tag_int()
+	static double floatval(uint8_t* s) { return s ? bam_aux2f(s) : 0; } //as GSamRecord::tag_float()
+};
+
 struct GReadAlnData {
 	GSamRecord* brec;
 	char strand; //-1, 0, 1
 	int nh;
 	int hi;
+	CAlnTags tags;
 	GPVec<CJunction> juncs;
 	union {
 		TAlnInfo* tinfo;
@@ -270,6 +327,7 @@ struct CBundle {
 struct CPrediction:public GSeg {
 	int geneno;
 	GffObj* t_eq; //equivalent reference transcript (guide)
+	GffObj* merge_ref; //related guide retained when a merge changes structure
 	//char *id;
         double cov;
         double longcov;
@@ -281,15 +339,30 @@ struct CPrediction:public GSeg {
 	GVec<GSeg> exons;
 	GVec<float> exoncov;
 	GStr mergename;
+	GVec<int> merge_files;
+	int merge_path_support;
+	int merge_piece_support;
+	int merge_5p_support;
+	int merge_3p_support;
+	int merge_locus_support;
+	char merge_class;
+	char merge_origin; // 0: legacy path, 'o': observed intron chain, 'j': synthesized join, 'x': superseded
+	GVec<int> merge_contained_files; // files of fragments absorbed by a guide
+	int merge_nrec; // input records represented by this prediction
+	int merge_chain; // index of the observed chain in BundleData::mergechains, or -1
+	GStr merge_ref_aliases;
         CPrediction(int _geneno=0, GffObj* guide=NULL, int gstart=0, int gend=0, double _cov=0, char _strand='.',
         int _len=0,bool f=true, CPrediction* lp=NULL):GSeg(gstart,gend), geneno(_geneno),t_eq(guide),cov(_cov),longcov(0),strand(_strand),
 	//CPrediction(int _geneno=0, char* _id=NULL,int gstart=0, int gend=0, float _cov=0, char _strand='.', float _frag=0,
 	//		int _len=0,bool f=true):GSeg(gstart,gend), geneno(_geneno),id(_id),cov(_cov),strand(_strand),frag(_frag),
-			tlen(_len),flag(f),linkpred(lp),exons(),exoncov(),mergename() {}
+			tlen(_len),flag(f),linkpred(lp),exons(),exoncov(),mergename(),merge_files(),merge_path_support(0),
+			merge_piece_support(0),merge_5p_support(0),merge_3p_support(0),merge_locus_support(0),
+			merge_class(0),merge_origin(0),merge_contained_files(),merge_nrec(0),merge_chain(-1),merge_ref_aliases() { merge_ref=guide; }
         void init(int _geneno=0, GffObj* guide=NULL, int gstart=0, int gend=0, double _cov=0, char _strand='.',
 	          int _len=0,bool f=true, CPrediction* lp=NULL) {
 		geneno=_geneno;
 		t_eq=guide;
+		merge_ref=guide;
 		start=gstart;
 		end=gend;
 		cov=_cov;
@@ -300,14 +373,53 @@ struct CPrediction:public GSeg {
 		exons.Clear();
 		exoncov.Clear();
 		mergename.clear();
+		merge_files.Clear();
+		merge_path_support=0;
+		merge_piece_support=0;
+		merge_5p_support=0;
+		merge_3p_support=0;
+		merge_locus_support=0;
+		merge_class=0;
+		merge_origin=0;
+		merge_contained_files.Clear();
+		merge_nrec=0;
+		merge_chain=-1;
+		merge_ref_aliases.clear();
 	}
 
 	CPrediction(CPrediction& c):GSeg(c.start, c.end), geneno(c.geneno),
 //			id(Gstrdup(c.id)), cov(c.cov), strand(c.strand), frag(c.frag), tlen(c.tlen), flag(c.flag),
-			t_eq(c.t_eq), cov(c.cov), longcov(c.longcov),strand(c.strand), tlen(c.tlen), flag(c.flag),linkpred(c.linkpred),
-	      exons(c.exons),  exoncov(c.exoncov), mergename(c.mergename) {}
+			t_eq(c.t_eq), merge_ref(c.merge_ref), cov(c.cov), longcov(c.longcov),strand(c.strand), tlen(c.tlen), flag(c.flag),linkpred(c.linkpred),
+	      exons(c.exons), exoncov(c.exoncov), mergename(c.mergename), merge_files(c.merge_files),
+	      merge_path_support(c.merge_path_support),merge_piece_support(c.merge_piece_support),
+	      merge_5p_support(c.merge_5p_support),merge_3p_support(c.merge_3p_support),
+	      merge_locus_support(c.merge_locus_support),merge_class(c.merge_class),merge_origin(c.merge_origin),
+	      merge_contained_files(c.merge_contained_files),merge_nrec(c.merge_nrec),merge_chain(c.merge_chain),merge_ref_aliases(c.merge_ref_aliases) {}
 	~CPrediction() { //GFREE(id);
 		}
+};
+
+// one observed stranded multi-exon structure of a merge bundle: an intron chain and the
+// most extended ends seen in each input file
+struct CMergeChain {
+	char strand; // '+' or '-'
+	GVec<GSeg> introns; // start: last base of the upstream exon; end: first base of the downstream exon
+	GVec<int> files;
+	GVec<uint> fstart; // per file, the smallest start
+	GVec<uint> fend;   // per file, the largest end
+	int nrec; // input records
+	uint jstart; // ends of a graph path with this chain that absorbed single-exon inputs;
+	uint jend;   // used only with --min-introns 0 (0: none)
+	CMergeChain(char s='+'):strand(s),introns(),files(),fstart(),fend(),nrec(0),jstart(0),jend(0) {}
+	void addRecord(int f,uint rstart,uint rend) {
+		nrec++;
+		for(int i=0;i<files.Count();i++) if(files[i]==f) {
+			if(rstart<fstart[i]) fstart[i]=rstart;
+			if(rend>fend[i]) fend[i]=rend;
+			return;
+		}
+		files.Add(f); fstart.Add(rstart); fend.Add(rend);
+	}
 };
 
 // bundle data structure, holds all input data parsed from BAM file
@@ -331,11 +443,20 @@ struct BundleData {
  GPVec<GffObj> keepguides; //list of guides in this bundle (+ synthetic nascents if genNascent)
  GPVec<GPtFeature> ptfs; //point features for this bundle
  GList<CPrediction> pred;
+ GPVec<CMergeChain> mergechains; // merge mode: observed intron chains of the bundle
  int numNascents=0; //number of nascent transcripts generated for this bundle
  RC_BundleData* rc_data; // read count data for this bundle
  // Long-read witness for adjacent junction pairs (packed key -> count)
  // Key recommended: (uint64_t)jL_ptr << 32 ^ (uint64_t)jR_ptr, using canonical CJunction* pointers
  GHashMap<uint64_t, uint32_t> lr_pair;
+// used by processRead() to check whether an incoming read is identical to a read already in readlist (not used with --merge):
+ GHashMap<uint64_t,int> last_read_with_key; // key of a stored read (see readkey() in rlink.cpp) -> readlist index of the last stored read with that key
+ GVec<int> prev_read_same_key; // prev_read_same_key[i] is the position of the prev read with the key of readlist[i], or -1 if none
+ void clearReadIndex() { // the index is only for the thread that fills the bundle
+	if(last_read_with_key.n_buckets()>65536) last_read_with_key.Reset(); // do not keep a huge table around
+	else last_read_with_key.Clear();
+	prev_read_same_key.Clear(); // also frees the array
+ }
  // CPAS breakpoints (bundle-relative indices, to be merged into bp in build_graphs)
  GVec<int> cpasCuts[2];  // 0 = minus strand, 1 = plus strand
  BundleData():status(BUNDLE_STATUS_CLEAR), idx(0), start(0), end(0),
@@ -358,6 +479,7 @@ struct BundleData {
 		 //tdata->in_bundle=1;
 		 setGuideStatus(keepguides[i], GBST_IN_BUNDLE);
 	 }
+	 clearReadIndex(); //all the reads are in: free the index before the bundle is processed
 	 status=BUNDLE_STATUS_READY;
  }
 
@@ -397,8 +519,10 @@ struct BundleData {
 	ptfs.Clear();
 	pred.Clear();
 	pred.setSorted(false);
+	mergechains.Clear();
 	readlist.Clear();
 	readlist.setSorted(false);
+	clearReadIndex();
 	for(int i=0;i<3;i++) {
 		bpcov[i].Clear();
 		bpcov[i].setCapacity(1024);
